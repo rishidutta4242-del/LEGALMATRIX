@@ -1,0 +1,6 @@
+{
+  "name": "LEGALMETRIX",
+  "description": "AI-assisted Legal Metrology Packaged Commodity Compliance Screening Platform for SIH 2026 (PS 26034). Multimodal label analysis, deterministic legal rule engine, compliance evidence chain, and enforcement reporting.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

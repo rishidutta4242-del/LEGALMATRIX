@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LEGALMETRIX</title>
+    <meta name="description" content="AI-assisted Legal Metrology Packaged Commodity Compliance Screening Platform for SIH 2026 (PS 26034). Multimodal label analysis, deterministic legal rule engine, compliance evidence chain, and enforcement reporting." />
+    <meta property="og:title" content="LEGALMETRIX" />
+    <meta property="og:description" content="AI-assisted Legal Metrology Packaged Commodity Compliance Screening Platform for SIH 2026 (PS 26034). Multimodal label analysis, deterministic legal rule engine, compliance evidence chain, and enforcement reporting." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+      // Suppress benign Vite HMR websocket disconnection errors from displaying error overlays
+      (function() {
+        function isHmrError(err) {
+          if (!err) return false;
+          var str = typeof err === 'string' ? err : (err.message || err.stack || String(err));
+          return str.indexOf('WebSocket closed without opened') !== -1 ||
+                 str.indexOf('[vite] failed to connect to websocket') !== -1 ||
+                 str.indexOf('WebSocket') !== -1;
+        }
+
+        // Monkey-patch WebSocket to prevent unhandled rejection/errors from Vite HMR client
+        if (typeof window !== 'undefined' && window.WebSocket) {
+          var OriginalWebSocket = window.WebSocket;
+          window.WebSocket = function(url, protocols) {
+            try {
+              var ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
+              ws.addEventListener('error', function(e) {
+                if (typeof url === 'string' && (url.indexOf('localhost') !== -1 || url.indexOf('127.0.0.1') !== -1 || url.indexOf('vite') !== -1)) {
+                  e.stopImmediatePropagation && e.stopImmediatePropagation();
+                  e.preventDefault && e.preventDefault();
+                }
+              });
+              return ws;
+            } catch (err) {
+              return {};
+            }
+          };
+          window.WebSocket.prototype = OriginalWebSocket.prototype;
+        }
+
+        window.addEventListener('unhandledrejection', function(event) {
+          if (isHmrError(event.reason)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('error', function(event) {
+          if (isHmrError(event.message) || isHmrError(event.error)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+
+        var origConsoleError = console.error;
+        console.error = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            if (isHmrError(arguments[i])) {
+              return;
+            }
+          }
+          origConsoleError.apply(console, arguments);
+        };
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased font-sans">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
