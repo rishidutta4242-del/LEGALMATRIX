@@ -984,7 +984,7 @@ export class LegalMetrologyRuleEngine {
       case 'CONSUMER_CARE': {
         const text = (decl.original_text || '').toLowerCase();
         const hasPhone =
-          /\b(?:\+91|0)?\d{10}\b|\b1800\d{6,8}\b|\b\d{3,5}[-\s]\d{6,8}\b/.test(text) ||
+          /\b(?:\+91[-\s]?|0)?\d{10}\b|\b1800[-\s]?\d{3,4}[-\s]?\d{3,4}\b|\b\d{3,5}[-\s]\d{6,8}\b/.test(text) ||
           !!declStore.getBest('consumer_care_phone')?.found;
         const hasEmail =
           /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text) ||

@@ -264,9 +264,9 @@ export const PublicVerificationView: React.FC<PublicVerificationViewProps> = ({
                 {isRevoked && 'Certificate Revoked — Mandatory Non-Compliance'}
                 {isExpired && 'Statutory Certificate Expired'}
               </h1>
-              {isRevoked && certificate.revocation_reason && (
+              {isRevoked && certificate.revocation_details?.reason && (
                 <p className="text-xs text-red-300 mt-1 italic bg-red-900/40 p-1.5 rounded border border-red-700/50">
-                  Revocation Notice: {certificate.revocation_reason}
+                  Revocation Notice: {certificate.revocation_details.reason}
                 </p>
               )}
             </div>

@@ -14,6 +14,74 @@ export interface FetchedProductData {
   platform: string;
 }
 
+function escapeXml(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function generateMarketplacePackagingSvg(data: {
+  productName: string;
+  brand: string;
+  category: string;
+  netQuantity?: string;
+  mrp?: string;
+  barcode?: string;
+  platform: string;
+}): string {
+  const name = data.productName || 'Packaged Commodity';
+  const brand = data.brand || 'Retail Brand';
+  const netQty = data.netQuantity || '250 ml';
+  const mrp = data.mrp || '₹149.00 (Incl. of all taxes)';
+  const barcode = data.barcode || '8908876543210';
+  const platform = data.platform || 'E-Commerce Marketplace';
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="750" viewBox="0 0 600 750" fill="#f8fafc">
+    <rect width="600" height="750" fill="#0f172a" stroke="#334155" stroke-width="4"/>
+    <rect x="25" y="25" width="550" height="700" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+    
+    <rect x="35" y="35" width="530" height="90" rx="10" fill="#1e293b"/>
+    <text x="300" y="72" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#38bdf8" text-anchor="middle">${escapeXml(brand.toUpperCase())}</text>
+    <text x="300" y="100" font-family="Arial, sans-serif" font-size="13" fill="#94a3b8" text-anchor="middle">Legal Metrology Market Surveillance Sample • ${escapeXml(platform)}</text>
+
+    <rect x="50" y="145" width="500" height="220" rx="12" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+    <circle cx="300" cy="225" r="48" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+    <text x="300" y="238" font-family="Arial, sans-serif" font-size="34" text-anchor="middle">📦</text>
+    <text x="300" y="300" font-family="Arial, sans-serif" font-size="17" font-weight="bold" fill="#0f172a" text-anchor="middle">${escapeXml(name.slice(0, 38))}</text>
+    <text x="300" y="330" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#0284c7" text-anchor="middle">NET QUANTITY: ${escapeXml(netQty)}</text>
+
+    <rect x="50" y="380" width="500" height="325" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="70" y="415" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#0f172a">STATUTORY DECLARATIONS (RULE 6 / SCH. II)</text>
+    
+    <text x="70" y="450" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">1. Generic Name:</text>
+    <text x="210" y="450" font-family="Arial, sans-serif" font-size="13" fill="#0f172a">${escapeXml(name.slice(0, 35))}</text>
+
+    <text x="70" y="480" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">2. Net Quantity:</text>
+    <text x="210" y="480" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#0284c7">${escapeXml(netQty)}</text>
+
+    <text x="70" y="510" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">3. MRP (incl. taxes):</text>
+    <text x="210" y="510" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#15803d">${escapeXml(mrp)}</text>
+
+    <text x="70" y="540" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">4. Mfd &amp; Marketed by:</text>
+    <text x="70" y="562" font-family="Arial, sans-serif" font-size="12" fill="#64748b">${escapeXml(brand)} Industries, Plot 18, Industrial Area, India</text>
+
+    <text x="70" y="590" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">5. Date of Packaging:</text>
+    <text x="210" y="590" font-family="Arial, sans-serif" font-size="13" fill="#0f172a">04/2026 | Batch: INSP-MKP-26</text>
+
+    <text x="70" y="620" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">6. Consumer Care:</text>
+    <text x="210" y="620" font-family="Arial, sans-serif" font-size="12" fill="#0369a1">care@${escapeXml(brand.toLowerCase().replace(/[^a-z0-9]/g, ''))}.in | 1800-200-1122</text>
+
+    <rect x="70" y="640" width="180" height="45" fill="#f8fafc" stroke="#cbd5e1"/>
+    <text x="160" y="665" font-family="monospace" font-size="14" text-anchor="middle">||| | |||| || |||</text>
+    <text x="160" y="678" font-family="monospace" font-size="9" text-anchor="middle">${escapeXml(barcode)}</text>
+  </svg>`;
+
+  return `data:image/svg+xml;base64,${Buffer.from(svg.trim()).toString('base64')}`;
+}
+
 /**
  * Real E-Commerce & Webpage Scraper for Legal Metrology Surveillance
  * Fetches real HTML, parses OpenGraph/JSON-LD/Meta, downloads the real product image,
@@ -123,10 +191,10 @@ export async function fetchRealProductFromUrl(sourceUrl: string): Promise<Fetche
         html = await response.text();
       }
     } else {
-      console.warn(`[URL Fetcher] Direct scraping of ${targetUrl.hostname} returned HTTP ${response.status}. Using resilient metadata extractor.`);
+      console.log(`[URL Fetcher] Direct scraping of ${targetUrl.hostname} returned HTTP ${response.status}. Using resilient metadata extractor.`);
     }
   } catch (err: any) {
-    console.warn(`[URL Fetcher] Fetch failed for ${targetUrl.hostname} (${err.message}). Engaging resilient parser.`);
+    console.log(`[URL Fetcher] Fetch failed for ${targetUrl.hostname} (${err.message}). Engaging resilient parser.`);
   }
 
   // --- HTML Parsing ---
@@ -216,74 +284,6 @@ export async function fetchRealProductFromUrl(sourceUrl: string): Promise<Fetche
     }
   }
 
-function escapeXml(str: string): string {
-  return (str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function generateMarketplacePackagingSvg(data: {
-  productName: string;
-  brand: string;
-  category: string;
-  netQuantity?: string;
-  mrp?: string;
-  barcode?: string;
-  platform: string;
-}): string {
-  const name = data.productName || 'Packaged Commodity';
-  const brand = data.brand || 'Retail Brand';
-  const netQty = data.netQuantity || '250 ml';
-  const mrp = data.mrp || '₹149.00 (Incl. of all taxes)';
-  const barcode = data.barcode || '8908876543210';
-  const platform = data.platform || 'E-Commerce Marketplace';
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="750" viewBox="0 0 600 750" fill="#f8fafc">
-    <rect width="600" height="750" fill="#0f172a" stroke="#334155" stroke-width="4"/>
-    <rect x="25" y="25" width="550" height="700" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
-    
-    <rect x="35" y="35" width="530" height="90" rx="10" fill="#1e293b"/>
-    <text x="300" y="72" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#38bdf8" text-anchor="middle">${escapeXml(brand.toUpperCase())}</text>
-    <text x="300" y="100" font-family="Arial, sans-serif" font-size="13" fill="#94a3b8" text-anchor="middle">Legal Metrology Market Surveillance Sample • ${escapeXml(platform)}</text>
-
-    <rect x="50" y="145" width="500" height="220" rx="12" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
-    <circle cx="300" cy="225" r="48" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
-    <text x="300" y="238" font-family="Arial, sans-serif" font-size="34" text-anchor="middle">📦</text>
-    <text x="300" y="300" font-family="Arial, sans-serif" font-size="17" font-weight="bold" fill="#0f172a" text-anchor="middle">${escapeXml(name.slice(0, 38))}</text>
-    <text x="300" y="330" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#0284c7" text-anchor="middle">NET QUANTITY: ${escapeXml(netQty)}</text>
-
-    <rect x="50" y="380" width="500" height="325" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
-    <text x="70" y="415" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#0f172a">STATUTORY DECLARATIONS (RULE 6 / SCH. II)</text>
-    
-    <text x="70" y="450" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">1. Generic Name:</text>
-    <text x="210" y="450" font-family="Arial, sans-serif" font-size="13" fill="#0f172a">${escapeXml(name.slice(0, 35))}</text>
-
-    <text x="70" y="480" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">2. Net Quantity:</text>
-    <text x="210" y="480" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#0284c7">${escapeXml(netQty)}</text>
-
-    <text x="70" y="510" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">3. MRP (incl. taxes):</text>
-    <text x="210" y="510" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#15803d">${escapeXml(mrp)}</text>
-
-    <text x="70" y="540" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">4. Mfd &amp; Marketed by:</text>
-    <text x="70" y="562" font-family="Arial, sans-serif" font-size="12" fill="#64748b">${escapeXml(brand)} Industries, Plot 18, Industrial Area, India</text>
-
-    <text x="70" y="590" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">5. Date of Packaging:</text>
-    <text x="210" y="590" font-family="Arial, sans-serif" font-size="13" fill="#0f172a">04/2026 | Batch: INSP-MKP-26</text>
-
-    <text x="70" y="620" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">6. Consumer Care:</text>
-    <text x="210" y="620" font-family="Arial, sans-serif" font-size="12" fill="#0369a1">care@${escapeXml(brand.toLowerCase().replace(/[^a-z0-9]/g, ''))}.in | 1800-200-1122</text>
-
-    <rect x="70" y="640" width="180" height="45" fill="#f8fafc" stroke="#cbd5e1"/>
-    <text x="160" y="665" font-family="monospace" font-size="14" text-anchor="middle">||| | |||| || |||</text>
-    <text x="160" y="678" font-family="monospace" font-size="9" text-anchor="middle">${escapeXml(barcode)}</text>
-  </svg>`;
-
-  return `data:image/svg+xml;base64,${Buffer.from(svg.trim()).toString('base64')}`;
-}
-
   // Infer Category from name, slug and description
   const lowerDesc = `${productName} ${cleanSlug} ${description}`.toLowerCase();
   if (lowerDesc.includes('shampoo') || lowerDesc.includes('cream') || lowerDesc.includes('serum') || lowerDesc.includes('lotion') || lowerDesc.includes('cosmetic') || lowerDesc.includes('soap')) {
@@ -339,7 +339,7 @@ function generateMarketplacePackagingSvg(data: {
         }
       }
     } catch (err: any) {
-      console.warn(`[URL Fetcher] Real image download failed (${err.message}). Using synthetic statutory label render.`);
+      console.log(`[URL Fetcher] Real image download failed (${err.message}). Using synthetic statutory label render.`);
     }
   }
 
@@ -380,6 +380,9 @@ function generateMarketplacePackagingSvg(data: {
     brand: brand || 'Marketplace Seller / Brand',
     category,
     description: description || undefined,
+    barcode: barcode || undefined,
+    mrp: mrp || undefined,
+    net_quantity: netQuantity || undefined,
     image: inspectionImage,
     source_url: targetUrl.href,
     platform

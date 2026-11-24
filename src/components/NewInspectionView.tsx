@@ -363,7 +363,7 @@ export const NewInspectionView: React.FC = () => {
   const handleLoadFallbackSample = async () => {
     try {
       // Use pre-screened demo inspection record
-      const fallbackRecord = await fetchInspectionById('INSP-2026-001');
+      const fallbackRecord = await fetchInspectionById('INS-2026-00101');
       setIsAnalyzing(false);
       setAnalysisError(null);
       setPendingRecordId(null);
@@ -455,7 +455,7 @@ export const NewInspectionView: React.FC = () => {
         setPendingRecordId(recordId);
       }
 
-      // 3. Trigger AI multimodal analysis with 75s timeout
+      // 3. Trigger AI multimodal analysis with 90s timeout
       const analysisRes = await analyzeInspection(recordId, {
         images,
         demo_preset_id: selectedPreset?.id,
@@ -466,7 +466,7 @@ export const NewInspectionView: React.FC = () => {
           total_gross_weight: bulkTotalGrossWeight,
           master_shipper_barcode: bulkMasterBarcode
         } : undefined
-      }, 75000);
+      }, 90000);
 
       // 4. Navigate to results upon completion
       setTimeout(() => {
@@ -475,13 +475,19 @@ export const NewInspectionView: React.FC = () => {
         setPendingRecordId(null);
         viewInspection(analysisRes.inspection, 'compliance_results');
         const hasCert = !!analysisRes.inspection?.certificate_id;
-        showToast(
-          hasCert
-            ? 'Inspection completed & Official Compliance Certificate issued!'
-            : 'Legal Metrology screening completed. Schedule II compliance evaluated.',
-          'success'
-        );
-      }, 1200);
+        if (analysisRes.inspection?.status === 'NO_PACKAGE_DETECTED') {
+          showToast('Screening complete: No retail packaged commodity label detected in captured frame.', 'info');
+        } else if (analysisRes.ai_source === 'FALLBACK_PROTOTYPE_ENGINE' && !selectedPreset) {
+          showToast('Evidence secured in custody chain. Cloud vision AI is temporarily busy; declarations queued for officer verification.', 'info');
+        } else {
+          showToast(
+            hasCert
+              ? 'Inspection completed & Official Compliance Certificate issued!'
+              : 'Legal Metrology screening completed. Schedule II compliance evaluated.',
+            'success'
+          );
+        }
+      }, 800);
     } catch (err: any) {
       setIsAnalyzing(false);
       const errMsg = err?.message || 'Inspection analysis timed out or encountered an error.';

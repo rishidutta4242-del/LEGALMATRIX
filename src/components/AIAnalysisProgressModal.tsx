@@ -168,7 +168,7 @@ export const AIAnalysisProgressModal: React.FC<AIAnalysisProgressModalProps> = (
 
         {/* Footer Note */}
         <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-          <span>AI Engine: Gemini 2.5 Flash / Flash Lite</span>
+          <span>AI Engine: Gemini 4 Hydrogen / 3.1 Flash Lite</span>
           <span className="font-mono text-blue-400">Rule Engine v2026.1 (LMPC 2011)</span>
         </div>
       </div>

@@ -422,7 +422,7 @@ export const SettingsView: React.FC = () => {
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase ${
                         log.category === 'RULE_CHANGE'
                           ? 'bg-blue-100 text-blue-800'
-                          : log.category === 'CONFIG_UPDATE'
+                          : log.category === 'CONFIG_CHANGE'
                           ? 'bg-purple-100 text-purple-800'
                           : log.category === 'CERTIFICATE_ACTION'
                           ? 'bg-emerald-100 text-emerald-800'
@@ -432,7 +432,7 @@ export const SettingsView: React.FC = () => {
                       </span>
                       <span className="font-bold text-slate-900">{log.action}</span>
                     </div>
-                    <p className="text-slate-600 text-[11px] leading-relaxed">{log.details}</p>
+                    <p className="text-slate-600 text-[11px] leading-relaxed">{log.rationale}</p>
                     <div className="text-[10px] text-slate-400">
                       Officer: <span className="font-semibold text-slate-600">{log.actor_name}</span> ({log.actor_role})
                     </div>

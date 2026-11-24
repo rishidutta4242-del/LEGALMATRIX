@@ -5,9 +5,13 @@
 export function normalizeMRP(text: string): { normalized: string; numericValue: number | null; currency: string } {
   if (!text) return { normalized: '', numericValue: null, currency: 'INR' };
   
-  // Clean string
-  const clean = text.replace(/mrp\s*[:.-]?/i, '').replace(/incl\.?.*taxes/i, '').trim();
-  
+  // Clean string & strip thousands separators (e.g., 1,200.00 -> 1200.00)
+  const clean = text
+    .replace(/mrp\s*[:.-]?/i, '')
+    .replace(/incl\.?.*taxes/i, '')
+    .replace(/(\d),(?=\d{3}\b)/g, '$1')
+    .trim();
+
   // Find numeric digits with optional decimal
   const match = clean.match(/(\d+(?:\.\d{1,2})?)/);
   if (match) {
@@ -18,7 +22,7 @@ export function normalizeMRP(text: string): { normalized: string; numericValue: 
       currency: 'INR'
     };
   }
-  
+
   return { normalized: clean, numericValue: null, currency: 'INR' };
 }
 
@@ -61,16 +65,35 @@ export function normalizeNetQuantity(text: string): { normalized: string; value:
 
 export function normalizeDate(text: string): { normalized: string; month?: string; year?: string } {
   if (!text) return { normalized: '' };
-  
+
   const clean = text.replace(/(?:mfg|pkd|mfd|packed|manufactured|imported|use\s*by|best\s*before)\s*[:.-]?/i, '').trim();
-  
-  // Format MM/YYYY or MM-YYYY or MMM YYYY
-  const matchMonthYear = clean.match(/(\d{1,2})[\/\-](\d{2,4})/);
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+  // Format ISO YYYY/MM or YYYY-MM
+  const matchIso = clean.match(/(\d{4})[\/.\-](\d{1,2})/);
+  if (matchIso) {
+    const year = matchIso[1];
+    const month = parseInt(matchIso[2], 10);
+    const monthName = (month >= 1 && month <= 12) ? months[month - 1] : `M${month}`;
+    return { normalized: `${monthName}-${year}`, month: monthName, year };
+  }
+
+  // Format DD/MM/YYYY or DD-MM-YYYY
+  const matchDmy = clean.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/);
+  if (matchDmy) {
+    const month = parseInt(matchDmy[2], 10);
+    let year = matchDmy[3];
+    if (year.length === 2) year = `20${year}`;
+    const monthName = (month >= 1 && month <= 12) ? months[month - 1] : `M${month}`;
+    return { normalized: `${monthName}-${year}`, month: monthName, year };
+  }
+
+  // Format MM/YYYY or MM-YYYY
+  const matchMonthYear = clean.match(/(\d{1,2})[\/.\-](\d{2,4})/);
   if (matchMonthYear) {
-    let month = parseInt(matchMonthYear[1], 10);
+    const month = parseInt(matchMonthYear[1], 10);
     let year = matchMonthYear[2];
     if (year.length === 2) year = `20${year}`;
-    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
     const monthName = (month >= 1 && month <= 12) ? months[month - 1] : `M${month}`;
     return {
       normalized: `${monthName}-${year}`,
@@ -78,9 +101,9 @@ export function normalizeDate(text: string): { normalized: string; month?: strin
       year
     };
   }
-  
-  // Format like 'May 2026' or '05/26'
-  const matchTextMonth = clean.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s\/\-](\d{2,4})/i);
+
+  // Format like 'May 2026' or 'APR-2026'
+  const matchTextMonth = clean.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s\/.\-]+(\d{2,4})/i);
   if (matchTextMonth) {
     const monthName = matchTextMonth[1].toUpperCase();
     let year = matchTextMonth[2];
@@ -91,7 +114,7 @@ export function normalizeDate(text: string): { normalized: string; month?: strin
       year
     };
   }
-  
+
   return { normalized: clean };
 }
 

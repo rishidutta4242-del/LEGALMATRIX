@@ -43,24 +43,8 @@ export const ComplianceResultView: React.FC = () => {
   const [overrideStatus, setOverrideStatus] = useState<'PASS' | 'FAIL' | 'REVIEW'>('PASS');
 
   const matchedPreset = useMemo(() => {
-    if (!currentInspection) return null;
-    return (
-      PREDEFINED_DEMO_PACKAGES.find(
-        (p) =>
-          (p.barcode && currentInspection.barcode && p.barcode === currentInspection.barcode) ||
-          (p.productName &&
-            currentInspection.product_name &&
-            p.productName.toLowerCase().trim() === currentInspection.product_name.toLowerCase().trim()) ||
-          (currentInspection.product_name &&
-            (p.productName.toLowerCase().includes(currentInspection.product_name.toLowerCase()) ||
-              currentInspection.product_name.toLowerCase().includes(p.productName.toLowerCase()))) ||
-          (currentInspection.id &&
-            ((currentInspection.id.includes('001') && p.id === 'demo-compliant-cookies') ||
-              (currentInspection.id.includes('002') && p.id === 'demo-violation-shampoo') ||
-              (currentInspection.id.includes('003') && p.id === 'demo-protein-contradiction') ||
-              (currentInspection.id.includes('004') && p.id === 'demo-bulk-carton')))
-      ) || null
-    );
+    if (!currentInspection?.demo_preset_id) return null;
+    return PREDEFINED_DEMO_PACKAGES.find((p) => p.id === currentInspection.demo_preset_id) || null;
   }, [currentInspection]);
 
   // Certificate State
@@ -479,6 +463,21 @@ export const ComplianceResultView: React.FC = () => {
         </div>
       )}
 
+      {/* Pipeline / Vision Service Warnings Banner */}
+      {currentInspection.warnings && currentInspection.warnings.length > 0 && currentInspection.status !== 'NO_PACKAGE_DETECTED' && (
+        <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start space-x-3 text-xs text-amber-950">
+          <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="font-bold text-amber-900">Screening &amp; Extraction Advisory</div>
+            <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-amber-900">
+              {currentInspection.warnings.map((w, idx) => (
+                <li key={idx}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {/* Statutory Disclaimer Box */}
       <div className="p-3.5 bg-blue-50/70 border border-blue-200/80 rounded-xl flex items-center space-x-3 text-xs text-blue-900">
         <Info className="h-4 w-4 text-blue-600 shrink-0" />
@@ -501,7 +500,7 @@ export const ComplianceResultView: React.FC = () => {
           </div>
           <button
             type="button"
-            onClick={() => setActiveView('evidence')}
+            onClick={() => setActiveView('evidence_viewer')}
             className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center space-x-1 cursor-pointer self-start sm:self-auto"
           >
             <span>Open Interactive Evidence Canvas</span>
@@ -516,7 +515,7 @@ export const ComplianceResultView: React.FC = () => {
               className="p-2.5 rounded-xl border border-slate-200 bg-slate-50 space-y-2 group hover:border-blue-300 transition"
             >
               <div
-                onClick={() => setActiveView('evidence')}
+                onClick={() => setActiveView('evidence_viewer')}
                 className="h-28 sm:h-32 rounded-lg bg-white overflow-hidden flex items-center justify-center border border-slate-200 cursor-pointer p-1 group-hover:shadow-xs transition"
               >
                 <img
@@ -535,7 +534,7 @@ export const ComplianceResultView: React.FC = () => {
                 <span>{img.quality?.resolution || '1920x1080'}</span>
                 <button
                   type="button"
-                  onClick={() => setActiveView('evidence')}
+                  onClick={() => setActiveView('evidence_viewer')}
                   className="text-blue-600 font-bold hover:underline cursor-pointer"
                 >
                   Inspect →
@@ -565,7 +564,7 @@ export const ComplianceResultView: React.FC = () => {
                   key={fIdx}
                   onClick={() => {
                     setSelectedEvidenceField(field.field);
-                    setActiveView('evidence');
+                    setActiveView('evidence_viewer');
                   }}
                   className="p-2 bg-white rounded-lg border border-blue-100 text-xs flex items-center justify-between cursor-pointer hover:border-blue-300 transition shadow-2xs"
                 >

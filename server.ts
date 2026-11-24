@@ -61,7 +61,7 @@ async function startServer() {
       service: 'LEGALMETRIX API Server',
       sih_problem_statement: 'SIH 2026 PS 26034',
       gemini_connected: hasGeminiKey,
-      gemini_model: 'gemini-3.8-flash',
+      gemini_model: 'gemini-4-hydrogen',
       rule_engine_version: '2026.1 (LMPC Rules 2011)',
       database_status: 'operational',
       persistence_active: persistence.isPersistent,
@@ -477,12 +477,12 @@ async function startServer() {
   // Dedicated OCR Image Preprocessing Endpoint (Sharp-powered grayscale, contrast normalization, thresholding)
   app.post('/api/images/preprocess', async (req: Request, res: Response) => {
     try {
-      const { image_url, name } = req.body;
+      const { image_url } = req.body;
       if (!image_url || typeof image_url !== 'string') {
         return res.status(400).json({ error: 'image_url string is required for OCR preprocessing' });
       }
 
-      const result = await preprocessImageForOcr(image_url, name || 'Package Label');
+      const result = await preprocessImageForOcr(image_url);
       res.json({
         success: true,
         data: {
@@ -693,21 +693,30 @@ async function startServer() {
         demoPresetId: inspection.demo_preset_id
       });
 
-      // Retain back/other declarations, replace front declarations
-      const existingBackDecls = inspection.declarations.filter(d => 
-        d.image_type?.toLowerCase() === 'back' || 
-        (d.image_id && d.image_id !== frontImage.id && d.image_type !== 'Front')
-      );
+      // Retain back/other declarations cleanly, and only keep non-recalibrated front fields if needed
+      const frontRecalFields = new Set(newFrontDecls.map(d => d.field));
+      const existingOtherDecls = inspection.declarations.filter(d => {
+        const isFront = (d.image_id && d.image_id === frontImage.id) ||
+          (!d.image_id && d.image_type?.toLowerCase() === 'front');
+        if (!isFront) return true;
+        return !['brand_name', 'product_name', 'sub_brand', 'front_claims', 'veg_non_veg', ...frontRecalFields].includes(d.field);
+      });
 
       // Merge declarations cleanly
-      const mergedDeclarations = [...newFrontDecls, ...existingBackDecls];
+      const mergedDeclarations = [...newFrontDecls, ...existingOtherDecls];
 
-      // Re-evaluate rules with the updated declarations
+      // Re-evaluate rules with full inspection context
       const ruleEngine = new LegalMetrologyRuleEngine(db.getRules());
+      const normalizedPkgLevel = (inspection.package_level === 'BULK_BOX' || inspection.package_level === 'WHOLESALE_BULK_BOX')
+        ? 'BULK_BOX'
+        : 'RETAIL_CONSUMER';
       const evaluationResult = ruleEngine.evaluateInspection(
         mergedDeclarations,
         inspection.images.map(img => ({ id: img.id, type: img.type })),
-        inspection.category
+        inspection.category,
+        inspection.readability_analysis,
+        inspection.mfg_date_stated,
+        normalizedPkgLevel
       );
 
       const passCount = evaluationResult.evaluations.filter(r => r.status === 'PASS').length;
@@ -720,7 +729,8 @@ async function startServer() {
         rule_evaluations: evaluationResult.evaluations,
         cross_image_checks: evaluationResult.crossImageChecks,
         screening_score: newScore,
-        status: newStatus
+        status: newStatus,
+        plain_language_summary: evaluationResult.plainLanguageSummary
       });
 
       db.logSystemAudit({
@@ -738,8 +748,16 @@ async function startServer() {
 
       res.json({ success: true, inspection: updated });
     } catch (err: any) {
+      const msg = err?.message || 'Unknown error';
+      const isBusy = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429') || msg.includes('temporarily busy');
+      if (isBusy) {
+        console.log('[LegalMetrix Vision] Front OCR recalibration deferred due to upstream model load:', msg);
+        return res.status(503).json({
+          error: 'Cloud vision model is temporarily busy (503). Existing declarations are preserved; please retry shortly.'
+        });
+      }
       console.error('Failed to recalibrate front OCR:', err);
-      res.status(500).json({ error: 'Failed to recalibrate front panel OCR: ' + err.message });
+      res.status(500).json({ error: 'Failed to recalibrate front panel OCR: ' + msg });
     }
   });
 
@@ -1226,8 +1244,8 @@ async function startServer() {
                 });
               }
             }
-          } catch (analysisErr) {
-            console.warn(`Batch item ${newId} evaluation warning:`, analysisErr);
+          } catch (analysisErr: any) {
+            console.log(`[Bulk Intake] Batch item ${newId} evaluation notice:`, analysisErr?.message || analysisErr);
           }
 
           const current = db.getInspection(newId) || saved;
@@ -1241,7 +1259,7 @@ async function startServer() {
             inspection: current
           });
         } catch (itemErr: any) {
-          console.warn(`Bulk intake item ${i} failed individually:`, itemErr.message);
+          console.log(`[Bulk Intake] Item ${i} skipped:`, itemErr.message);
           itemResults.push({
             index: i,
             source: sourceIdent,
@@ -1375,8 +1393,8 @@ async function startServer() {
   // List all certificates
   app.get('/api/certificates', (req: Request, res: Response) => {
     try {
-      const { status, query } = req.query;
-      const list = db.getAllCertificates(status as string, query as string);
+      const { status, query, inspection_id } = req.query;
+      const list = db.getAllCertificates(status as string, query as string, inspection_id as string);
       res.json(list);
     } catch (err: any) {
       console.error('Failed to fetch certificates:', err);
@@ -1431,7 +1449,7 @@ async function startServer() {
   // Generate compliance certificate for a Clean Pass inspection
   app.post('/api/certificates/generate', (req: Request, res: Response) => {
     try {
-      const { inspection_id, validity_months = 12, officer_name, officer_role, officer_badge_id } = req.body;
+      const { inspection_id, validity_months = 12, officer_name, officer_role, officer_badge_id, inspecting_officer } = req.body;
       if (!inspection_id) {
         return res.status(400).json({ error: 'inspection_id is required' });
       }
@@ -1468,7 +1486,9 @@ async function startServer() {
       }
 
       // Extract manufacturer details from declarations
-      const mfrDecl = inspection.declarations.find(d => d.field === 'manufacturer_name_address');
+      const mfrDecl = inspection.declarations.find(
+        d => d.field === 'manufacturer_name_address' || d.field === 'manufacturer_name' || d.field === 'packer_name'
+      );
       const netQtyDecl = inspection.declarations.find(d => d.field === 'net_quantity');
       const mrpDecl = inspection.declarations.find(d => d.field === 'mrp');
       const gtinBarcode = inspection.barcode || inspection.declarations.find(d => d.field === 'barcode')?.normalized_value || undefined;
@@ -1498,9 +1518,9 @@ async function startServer() {
           state: inspection.location?.includes('Karnataka') ? 'Karnataka' : undefined
         },
         inspecting_officer: {
-          name: officer_name || inspection.officer_name,
-          role: officer_role || 'Enforcement Officer',
-          badge_id: officer_badge_id || inspection.officer_id
+          name: officer_name || inspecting_officer?.name || inspection.officer_name,
+          role: officer_role || inspecting_officer?.role || 'Enforcement Officer',
+          badge_id: officer_badge_id || inspecting_officer?.badge_id || inspection.officer_id
         },
         issued_at: now.toISOString(),
         validity_months,

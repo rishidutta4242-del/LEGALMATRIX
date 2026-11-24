@@ -95,11 +95,16 @@ export async function preprocessImageForOcr(
 
   let sharpInstance = sharp(initialBuffer);
 
-  // If input is SVG, convert to PNG raster buffer for pixel-level filtering
+  // If input is SVG, rasterize cleanly at 150 DPI to PNG buffer for pixel-level filtering
   if (mimeType === 'image/svg+xml') {
-    const pngBuffer = await sharpInstance.png().toBuffer();
+    const pngBuffer = await sharp(initialBuffer, { density: 150 }).png().toBuffer();
     sharpInstance = sharp(pngBuffer);
     steps.push('Rasterized SVG to PNG buffer');
+  } else {
+    // Normalize EXIF orientation on raster uploads so coordinates match browser rendering
+    const rotatedBuffer = await sharpInstance.rotate().toBuffer();
+    sharpInstance = sharp(rotatedBuffer);
+    steps.push('Normalized EXIF orientation');
   }
 
   const meta = await sharpInstance.metadata();
@@ -267,8 +272,8 @@ Attached below is the contrast-optimized preprocessed image for statutory text e
           steps: preprocessed.preprocessingSteps,
           dimensions: `${preprocessed.metadata.width || 600}x${preprocessed.metadata.height || 750}`,
         });
-      } catch (err) {
-        console.warn('SVG Sharp preprocessing fallback:', err);
+      } catch (err: any) {
+        console.log('[Preprocessor] SVG Sharp preprocessing fallback:', err?.message || err);
         parts.push({
           text: `\n=== PACKAGE IMAGE #${idx} (image_index: ${idx}, image_id: "${img.id}", image_type: "${imgType}") ===\n[Vector SVG Label Layout Content]:\n${svgContent}`,
         });
@@ -279,41 +284,44 @@ Attached below is the contrast-optimized preprocessed image for statutory text e
     // Raster image: Apply Sharp Grayscale, Contrast Adjustment & Thresholding
     try {
       const preprocessed = await preprocessImageForOcr(rawUrl);
+      const { buffer: origBuf } = extractBufferFromInput(rawUrl);
+
+      // Encode lightweight resized JPEGs for Gemini multimodal payload to prevent latency/timeouts
+      const compactEnhancedB64 = (
+        await sharp(preprocessed.grayscaleContrastBuffer)
+          .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 84 })
+          .toBuffer()
+      ).toString('base64');
+
+      const compactColorB64 = (
+        await sharp(origBuf)
+          .rotate()
+          .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 82 })
+          .toBuffer()
+      ).toString('base64');
 
       // 1. Send Preprocessed OCR-Enhanced Grayscale + Contrast image
       parts.push({
         text: `\n=== PACKAGE IMAGE #${idx} (image_index: ${idx}, image_id: "${img.id}", image_type: "${imgType}") ===
-[OCR-Enhanced Preprocessed View #${idx} - Grayscale, Dynamic Contrast Boost, Edge Sharpened]
-Notice: This preprocessed image has color background noise removed and ink contrast maximized for statutory label OCR:`,
+[OCR-Enhanced Preprocessed View #${idx} - Grayscale, Dynamic Contrast Boost, Edge Sharpened]:`,
       });
       parts.push({
         inlineData: {
-          mimeType: 'image/png',
-          data: preprocessed.grayscaleContrastBase64,
+          mimeType: 'image/jpeg',
+          data: compactEnhancedB64,
         },
       });
 
-      // 2. Also send Thresholded Binary View for dense fine-print text & inkjet batch codes
+      // 2. Send Color Reference View for dietary symbols (Green Veg Dot / Non-Veg mark) & trademarks
       parts.push({
-        text: `[OCR-Binarized Thresholded View #${idx} - Monochrome Text Segmentation]
-Notice: This thresholded view isolates high-frequency character strokes (Rule 6 declarations, MRP, dates, batch):`,
+        text: `[Original Color View #${idx} - Reference for Color Dietary Symbols & Trademarks]:`,
       });
       parts.push({
         inlineData: {
-          mimeType: 'image/png',
-          data: preprocessed.thresholdedBase64,
-        },
-      });
-
-      // 3. Send Original Full-Color Image for dietary symbols (Vegetarian Green Dot / Non-Veg mark) & color trademarks
-      const { buffer: origBuf, mimeType: origMime } = extractBufferFromInput(rawUrl);
-      parts.push({
-        text: `[Original Color View #${idx} - Full Spectrum Reference for Color Marks (Green Veg Dot / Brown Non-Veg Mark)]`,
-      });
-      parts.push({
-        inlineData: {
-          mimeType: origMime === 'image/svg+xml' ? 'image/png' : origMime,
-          data: origBuf.toString('base64'),
+          mimeType: 'image/jpeg',
+          data: compactColorB64,
         },
       });
 
@@ -326,8 +334,8 @@ Notice: This thresholded view isolates high-frequency character strokes (Rule 6 
         steps: preprocessed.preprocessingSteps,
         dimensions: `${preprocessed.metadata.width || 0}x${preprocessed.metadata.height || 0}`,
       });
-    } catch (err) {
-      console.error(`Sharp preprocessing failed for image #${idx}:`, err);
+    } catch (err: any) {
+      console.log(`[Preprocessor] Using raw image buffer fallback for image #${idx}:`, err?.message || err);
       // Fallback: send original raw data
       const { buffer: rawBuf, mimeType: rawMime } = extractBufferFromInput(rawUrl);
       parts.push({

@@ -79,6 +79,8 @@ function cleanJsonText(raw: string): string {
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
     text = text.substring(firstBrace, lastBrace + 1);
   }
+  // Strip invalid trailing commas before } or ]
+  text = text.replace(/,\s*([}\]])/g, "$1");
   return text;
 }
 
@@ -133,8 +135,8 @@ export function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number
   } else if (typeof raw === "object") {
     ymin = Number(raw.ymin ?? raw.top ?? raw.y ?? raw.y1 ?? 0);
     xmin = Number(raw.xmin ?? raw.left ?? raw.x ?? raw.x1 ?? 0);
-    ymax = Number(raw.ymax ?? raw.bottom ?? (raw.y !== undefined && raw.height !== undefined ? raw.y + raw.height : 0) ?? raw.y2 ?? 0);
-    xmax = Number(raw.xmax ?? raw.right ?? (raw.x !== undefined && raw.width !== undefined ? raw.x + raw.width : 0) ?? raw.x2 ?? 0);
+    ymax = Number(raw.ymax ?? raw.bottom ?? raw.y2 ?? (raw.y !== undefined && raw.height !== undefined ? Number(raw.y) + Number(raw.height) : 0));
+    xmax = Number(raw.xmax ?? raw.right ?? raw.x2 ?? (raw.x !== undefined && raw.width !== undefined ? Number(raw.x) + Number(raw.width) : 0));
 
     const maxVal = Math.max(ymin, xmin, ymax, xmax);
     if (maxVal > 100) {
@@ -187,20 +189,45 @@ export async function analyzePackageImagesWithGemini(
   metadata?: { productName?: string; brand?: string; barcode?: string; demoPresetId?: string },
   allowFallback = true
 ): Promise<MultimodalAnalysisResult> {
+  const demoPresetId = metadata?.demoPresetId || images.find((image) => image.demo_preset_id)?.demo_preset_id;
+  let preprocessedImages: MultimodalAnalysisResult["preprocessed_images"] = undefined;
+
+  // Execute calibrated demo dataset extraction immediately after Sharp preprocessing (no unnecessary cloud wait or 503 retries)
+  if (demoPresetId && isDemoPresetId(demoPresetId)) {
+    try {
+      const prep = await prepareMultimodalImageParts(images);
+      preprocessedImages = prep.preprocessedImages;
+    } catch (prepErr: any) {
+      console.log("[LegalMetrix Vision] Sharp preprocessing skipped on demo preset:", prepErr?.message || prepErr);
+    }
+    const demoResult = getDemoFallbackExtraction(demoPresetId, images);
+    if (demoResult) {
+      return {
+        ...demoResult,
+        preprocessed_images: preprocessedImages,
+      };
+    }
+  }
+
   const client = getGeminiClient();
 
   if (!client) {
     if (!allowFallback) throw new Error("Gemini is unavailable; front-panel recalibration requires live AI.");
-    console.log("No Gemini API key available or initialized, utilizing honest prototype extractor.");
-    return generateFallbackExtraction(images, category, metadata);
+    console.log("[LegalMetrix Vision] No Gemini API key configured, utilizing local extraction engine.");
+    try {
+      const prep = await prepareMultimodalImageParts(images);
+      preprocessedImages = prep.preprocessedImages;
+    } catch {}
+    return generateFallbackExtraction(images, category, metadata, preprocessedImages);
   }
 
   try {
     const parts: any[] = [];
 
     // Multi-stage OCR image preprocessing (grayscale, contrast adjustment, thresholding, edge sharpening) via Sharp
-    const { parts: imageParts, preprocessedImages } = await prepareMultimodalImageParts(images);
-    parts.push(...imageParts);
+    const prepResult = await prepareMultimodalImageParts(images);
+    preprocessedImages = prepResult.preprocessedImages;
+    parts.push(...prepResult.parts);
 
     const systemPrompt = `You are LEGALMETRIX, an AI-assisted Legal Metrology Multimodal Compliance Engine built for the Department of Consumer Affairs (DoCA), Government of India (SIH 2026 - PS 26034).
 
@@ -280,6 +307,7 @@ CRITICAL ACCURACY MANDATE FOR FRONT PANEL:
   * front_claims: Tightly enclose prominent dietary or statutory claims.
   * net_quantity: If printed on the front, tightly enclose the net weight/volume statement.
 - Every bounding box [ymin, xmin, ymax, xmax] MUST strictly hug the glyph boundaries of the printed text or icon.
+- ZERO-OVERLAP DISCIPLINE: Distinct declarations on the same panel MUST have mutually disjoint bounding boxes whenever they occupy separate lines or regions. Never merge multiple stacked declarations into one oversized container box.
 
 ---
 
@@ -348,26 +376,19 @@ Extract all mandatory Legal Metrology declarations under Rule 6 and Schedule II:
 CRITICAL:
 - For each detected declaration, specify the EXACT image_index, image_id, and image_type where the text is physically visible.
 - NEVER put a bounding box on Image #0 (Front) for text that actually appears on Image #1 (Back).
-- box_2d [ymin, xmin, ymax, xmax] must tightly hug the exact text glyphs on that specific image on a 0-1000 scale.`;
+- box_2d [ymin, xmin, ymax, xmax] MUST tightly hug the exact text glyphs on that specific image on a 0-1000 scale and MUST NOT overlap sibling declaration boxes on separate lines.`;
 
     parts.push({ text: userPrompt });
 
-    // Multi-model failover cascade with supported Gemini models
+    // Multi-model failover cascade using supported active Gemini models
     const MODEL_CANDIDATES = [
       {
-        name: "gemini-3.8-flash",
+        name: "gemini-4-hydrogen",
         timeoutMs: 18000,
         config: {
           systemInstruction: systemPrompt,
-          responseMimeType: "application/json"
-        }
-      },
-      {
-        name: "gemini-flash-latest",
-        timeoutMs: 18000,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
         }
       },
       {
@@ -375,52 +396,62 @@ CRITICAL:
         timeoutMs: 15000,
         config: {
           systemInstruction: systemPrompt,
-          responseMimeType: "application/json"
-        }
-      },
-      {
-        name: "gemini-3.1-pro-preview",
-        timeoutMs: 22000,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
         }
       }
     ];
 
     let response: any = null;
     let successfulModel = "";
-    let lastError: any = null;
+    const candidateErrors: string[] = [];
 
     for (const candidate of MODEL_CANDIDATES) {
-      try {
-        const timeoutMs = candidate.timeoutMs;
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error(`Model ${candidate.name} call timed out after ${timeoutMs}ms`)), timeoutMs)
-        );
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const timeoutMs = candidate.timeoutMs;
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Model ${candidate.name} call timed out after ${timeoutMs}ms`)), timeoutMs)
+          );
 
-        const callPromise = client.models.generateContent({
-          model: candidate.name,
-          contents: parts,
-          config: candidate.config,
-        });
+          const callPromise = client.models.generateContent({
+            model: candidate.name,
+            contents: { parts },
+            config: candidate.config,
+          });
 
-        const res: any = await Promise.race([callPromise, timeoutPromise]);
-        if (res && res.text) {
-          response = res;
-          successfulModel = candidate.name;
+          const res: any = await Promise.race([callPromise, timeoutPromise]);
+          if (res && res.text) {
+            response = res;
+            successfulModel = candidate.name;
+            break;
+          }
+          candidateErrors.push(`${candidate.name}: empty text response`);
+          break;
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          const isTransient = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429');
+          if (isTransient && attempt === 0) {
+            const backoffMs = 1400 + Math.floor(Math.random() * 600);
+            console.log(`[LegalMetrix Vision] Model ${candidate.name} transient load spike; retrying in ${backoffMs}ms...`);
+            await new Promise((r) => setTimeout(r, backoffMs));
+            continue;
+          }
+          console.log(`[LegalMetrix Vision] Model ${candidate.name} unavailable or high demand; advancing cascade:`, msg);
+          candidateErrors.push(`${candidate.name}: ${msg}`);
           break;
         }
-      } catch (err: any) {
-        console.warn(`Model ${candidate.name} encountered error or high demand, trying next candidate:`, err.message || err);
-        lastError = err;
       }
+      if (response && response.text) break;
     }
 
     if (!response || !response.text) {
-      if (!allowFallback) throw new Error("Gemini returned no front-panel OCR result.");
-      console.warn("All Gemini cloud vision models busy or unavailable. Activating calibrated local OCR and statutory rule engine.");
-      return generateFallbackExtraction(images, category, metadata);
+      const errorDetail = candidateErrors.join(' | ');
+      if (!allowFallback) {
+        throw new Error(`Cloud vision models temporarily busy (503). Please retry front-panel OCR recalibration shortly.${errorDetail ? ` [${errorDetail}]` : ''}`);
+      }
+      console.log("[LegalMetrix Vision] Cloud vision models busy; recording custody evidence for officer inspection.", errorDetail);
+      return generateFallbackExtraction(images, category, metadata, preprocessedImages);
     }
 
     let parsed: any;
@@ -429,8 +460,8 @@ CRITICAL:
       parsed = JSON.parse(cleanedJson);
     } catch (parseErr: any) {
       if (!allowFallback) throw new Error("Gemini returned invalid front-panel OCR data.", { cause: parseErr });
-      console.warn("Failed to parse Gemini JSON output, engaging fallback extractor:", parseErr);
-      return generateFallbackExtraction(images, category, metadata);
+      console.log("[LegalMetrix Vision] Failed to parse vision JSON output; queuing manual review:", parseErr?.message || parseErr);
+      return generateFallbackExtraction(images, category, metadata, preprocessedImages);
     }
 
     let isPackageDetected = parsed.is_package_detected !== false;
@@ -493,8 +524,8 @@ CRITICAL:
           }
         }
 
-        // 5. Front-panel fields (product_name, brand) belong to front image
-        const isFrontPanelField = ["product_name", "brand"].includes(decl.field);
+        // 5. Front-panel fields belong to front image
+        const isFrontPanelField = ["product_name", "brand", "brand_name", "sub_brand", "front_claims", "veg_non_veg"].includes(decl.field);
         if (frontImg && isFrontPanelField && (!targetImg || targetImg.id === backImg?.id)) {
           targetImg = frontImg;
         }
@@ -518,10 +549,11 @@ CRITICAL:
           }
         }
 
+        const rawConf = typeof decl.confidence === "number" ? (decl.confidence > 1 ? decl.confidence / 100 : decl.confidence) : 0.85;
         let statusVal: DeclarationStatus = "FOUND";
         if (!decl.found || !isPackageDetected) {
           statusVal = "NOT_FOUND";
-        } else if (decl.confidence < 0.70 || decl.status === "UNCERTAIN") {
+        } else if (rawConf < 0.70 || decl.status === "UNCERTAIN") {
           statusVal = "UNCERTAIN";
         }
 
@@ -536,12 +568,12 @@ CRITICAL:
           original_text: decl.original_text || "",
           original_script_text: decl.original_script_text,
           script: decl.script,
-          transliterated_en: decl.transliterated_en,
+          transliterated_en: decl.transliterated_en || decl.translated_en,
           translated_en: decl.translated_en,
           normalized_value: normVal,
           found: isPackageDetected && !!decl.found,
           status: statusVal,
-          confidence: isPackageDetected ? Math.min(1.0, Math.max(0.0, decl.confidence ?? 0.85)) : 0.0,
+          confidence: isPackageDetected ? Math.min(1.0, Math.max(0.0, rawConf)) : 0.0,
           image_id: targetImg.id,
           image_type: targetImg.type,
           bbox: normalizedBox,
@@ -569,19 +601,25 @@ CRITICAL:
     };
   } catch (error: any) {
     if (!allowFallback) throw error;
-    console.error("Gemini API call encountered error, activating intelligent fallback engine:", error);
-    return generateFallbackExtraction(images, category, metadata);
+    console.log("[LegalMetrix Vision] Cloud vision request failed; engaging custody fallback:", error?.message || error);
+    return generateFallbackExtraction(images, category, metadata, preprocessedImages);
   }
 }
 
 export function generateFallbackExtraction(
   images: InspectionImage[],
   category: ProductCategory,
-  metadata?: { productName?: string; brand?: string; barcode?: string; demoPresetId?: string }
+  metadata?: { productName?: string; brand?: string; barcode?: string; demoPresetId?: string },
+  preprocessedImages?: MultimodalAnalysisResult["preprocessed_images"]
 ): MultimodalAnalysisResult {
   const demoPresetId = metadata?.demoPresetId || images.find((image) => image.demo_preset_id)?.demo_preset_id;
   const demoProfile = getDemoFallbackExtraction(demoPresetId, images);
-  if (demoProfile) return demoProfile;
+  if (demoProfile) {
+    return {
+      ...demoProfile,
+      preprocessed_images: preprocessedImages || demoProfile.preprocessed_images,
+    };
+  }
 
   const frontImg = images.find((i) => i.type === "Front") || images[0] || { id: "img-front", type: "Front", url: "", name: "" };
   const backImg = images.find((i) => i.type === "Back") || images[1] || frontImg;
@@ -701,6 +739,7 @@ export function generateFallbackExtraction(
     ai_notes:
       "Image capture recorded in secure chain of custody. Mandatory declarations pending officer physical inspection.",
     is_fallback: true,
+    preprocessed_images: preprocessedImages,
   };
 }
 
@@ -723,67 +762,15 @@ export async function recalibrateFrontOcr(
     if (!isDemoPresetId(demoPresetId)) throw new Error(`Unknown demo preset: ${demoPresetId}`);
     const presetDeclarations = getDemoFrontRecalibration(demoPresetId, frontImage);
     if (presetDeclarations) return presetDeclarations;
-  } else {
-    const liveResult = await analyzePackageImagesWithGemini(
-      [frontImage],
-      metadata?.category || 'Food',
-      { productName: metadata?.productName, brand: metadata?.brand },
-      false
-    );
-    return liveResult.declarations.filter(
-      (declaration) => declaration.image_id === frontImage.id || declaration.image_type === 'Front'
-    );
   }
 
-  const prodName = metadata?.productName || "Packaged Commodity";
-  const brandName = metadata?.brand || "Brand";
-
-  // General calibrated front OCR layout: brand at top, generic commodity in mid, net qty / claims at lower PDP
-  return [
-    {
-      id: "decl-front-brand-" + Date.now(),
-      field: "brand_name",
-      label: "Brand Name / Trademark",
-      original_text: brandName,
-      normalized_value: brandName,
-      found: true,
-      status: "FOUND",
-      confidence: 0.96,
-      image_id: frontImage.id,
-      image_type: "Front",
-      box_2d: [120, 200, 220, 800],
-      bbox: { ymin: 12.0, xmin: 20.0, ymax: 22.0, xmax: 80.0 },
-      notes: "Detected brand trademark on front panel."
-    },
-    {
-      id: "decl-front-prodname-" + Date.now(),
-      field: "product_name",
-      label: "Generic / Common Commodity Name",
-      original_text: prodName,
-      normalized_value: prodName,
-      found: true,
-      status: "FOUND",
-      confidence: 0.97,
-      image_id: frontImage.id,
-      image_type: "Front",
-      box_2d: [280, 180, 460, 820],
-      bbox: { ymin: 28.0, xmin: 18.0, ymax: 46.0, xmax: 82.0 },
-      notes: "Generic commodity name detected on Principal Display Panel (PDP) under Rule 6(1)(a)."
-    },
-    {
-      id: "decl-front-veg-" + Date.now(),
-      field: "veg_non_veg",
-      label: "Dietary Classification Mark",
-      original_text: "100% Vegetarian (Green Dot)",
-      normalized_value: "Vegetarian",
-      found: true,
-      status: "FOUND",
-      confidence: 0.95,
-      image_id: frontImage.id,
-      image_type: "Front",
-      box_2d: [760, 720, 860, 860],
-      bbox: { ymin: 76.0, xmin: 72.0, ymax: 86.0, xmax: 86.0 },
-      notes: "Dietary classification symbol on Principal Display Panel."
-    }
-  ];
+  const liveResult = await analyzePackageImagesWithGemini(
+    [frontImage],
+    metadata?.category || 'Food',
+    { productName: metadata?.productName, brand: metadata?.brand, barcode: metadata?.barcode },
+    false
+  );
+  return liveResult.declarations.filter(
+    (declaration) => declaration.image_id === frontImage.id || declaration.image_type === 'Front'
+  );
 }

@@ -442,4 +442,11 @@ export interface GtinLookupResult {
   certificates: ComplianceCertificate[];
   latest_status?: ComplianceStatus;
   risk_level?: 'LOW' | 'MODERATE' | 'ELEVATED' | 'CRITICAL';
+  total_inspections?: number;
+  repeat_offender_violations?: number;
+  manufacturer_risk_profile?: {
+    manufacturer_name: string;
+    risk_score: number;
+    risk_tier: string;
+  };
 }

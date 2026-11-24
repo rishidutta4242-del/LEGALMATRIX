@@ -584,12 +584,14 @@ class InMemoryDB {
       status: 'PASS',
       screening_score: 98,
       is_demo: true,
+      demo_preset_id: 'demo-compliant-cookies',
       images: [
         {
           id: 'img-d1-f',
           type: 'Front',
           name: 'aura_cookies_front.png',
           url: SAMPLE_IMAGE_FRONT_COMPLIANT,
+          demo_preset_id: 'demo-compliant-cookies',
           quality: {
             overall: 'GOOD',
             blurScore: 92,
@@ -604,6 +606,7 @@ class InMemoryDB {
           type: 'Back',
           name: 'aura_cookies_back.png',
           url: SAMPLE_IMAGE_BACK_COMPLIANT,
+          demo_preset_id: 'demo-compliant-cookies',
           quality: {
             overall: 'GOOD',
             blurScore: 94,
@@ -626,33 +629,36 @@ class InMemoryDB {
           confidence: 0.99,
           image_id: 'img-d1-f',
           image_type: 'Front',
-          bbox: { ymin: 7.5, xmin: 18.0, ymax: 14.0, xmax: 82.0 }
+          box_2d: [90, 260, 135, 740],
+          bbox: { ymin: 9.0, xmin: 26.0, ymax: 13.5, xmax: 74.0 }
         },
         {
           id: 'd1-1',
           field: 'product_name',
           label: 'Generic / Common Product Name',
-          original_text: 'Crunchy Wholegrain Oats Cookies',
+          original_text: 'CRUNCHY WHOLEGRAIN OATS COOKIES',
           normalized_value: 'Crunchy Wholegrain Oats Cookies',
           found: true,
           status: 'FOUND',
           confidence: 0.99,
           image_id: 'img-d1-f',
           image_type: 'Front',
-          bbox: { ymin: 15.0, xmin: 12.0, ymax: 20.5, xmax: 88.0 }
+          box_2d: [152, 140, 192, 860],
+          bbox: { ymin: 15.2, xmin: 14.0, ymax: 19.2, xmax: 86.0 }
         },
         {
           id: 'd1-claims',
           field: 'front_claims',
           label: 'Front Dietary / Statutory Claim',
-          original_text: '100% WHOLE GRAIN • HIGH FIBRE • ZERO TRANS FAT',
-          normalized_value: '100% Whole Grain, High Fibre',
+          original_text: '100% WHOLE GRAIN',
+          normalized_value: '100% Whole Grain',
           found: true,
           status: 'FOUND',
           confidence: 0.98,
           image_id: 'img-d1-f',
           image_type: 'Front',
-          bbox: { ymin: 45.0, xmin: 24.0, ymax: 50.0, xmax: 76.0 }
+          box_2d: [455, 280, 495, 720],
+          bbox: { ymin: 45.5, xmin: 28.0, ymax: 49.5, xmax: 72.0 }
         },
         {
           id: 'd1-2',
@@ -665,33 +671,64 @@ class InMemoryDB {
           confidence: 0.98,
           image_id: 'img-d1-f',
           image_type: 'Front',
-          bbox: { ymin: 71.0, xmin: 12.0, ymax: 76.0, xmax: 72.0 }
+          box_2d: [715, 130, 760, 780],
+          bbox: { ymin: 71.5, xmin: 13.0, ymax: 76.0, xmax: 78.0 }
         },
         {
           id: 'd1-veg',
           field: 'veg_non_veg',
           label: 'Dietary Classification Mark',
-          original_text: 'Vegetarian Symbol (Green Dot in Square)',
+          original_text: '100% Vegetarian (Green Dot Mark)',
           normalized_value: '100% Vegetarian',
           found: true,
           status: 'FOUND',
           confidence: 0.99,
           image_id: 'img-d1-f',
           image_type: 'Front',
-          bbox: { ymin: 82.0, xmin: 12.0, ymax: 87.5, xmax: 68.0 }
+          box_2d: [825, 130, 868, 680],
+          bbox: { ymin: 82.5, xmin: 13.0, ymax: 86.8, xmax: 68.0 }
+        },
+        {
+          id: 'd1-back-prod',
+          field: 'product_name',
+          label: 'Commodity Name (Back)',
+          original_text: '1. COMMODITY NAME: Wholegrain Oats Cookies',
+          normalized_value: 'Wholegrain Oats Cookies',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          box_2d: [180, 110, 210, 740],
+          bbox: { ymin: 18.0, xmin: 11.0, ymax: 21.0, xmax: 74.0 }
+        },
+        {
+          id: 'd1-back-qty',
+          field: 'net_quantity',
+          label: 'Net Quantity (Back)',
+          original_text: '2. NET QUANTITY: 200 g (Standard Metric Units)',
+          normalized_value: '200 g',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.98,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          box_2d: [232, 110, 262, 820],
+          bbox: { ymin: 23.2, xmin: 11.0, ymax: 26.2, xmax: 82.0 }
         },
         {
           id: 'd1-3',
           field: 'mrp',
           label: 'Maximum Retail Price (MRP)',
-          original_text: '3. MRP (INCL. TAXES): ₹75.00',
+          original_text: '3. MRP (INCL. TAXES): ₹75.00 (Incl. of all taxes)',
           normalized_value: '75.00 INR',
           found: true,
           status: 'FOUND',
           confidence: 0.99,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 28.2, xmin: 10.0, ymax: 31.8, xmax: 85.0 }
+          box_2d: [284, 110, 316, 820],
+          bbox: { ymin: 28.4, xmin: 11.0, ymax: 31.6, xmax: 82.0 }
         },
         {
           id: 'd1-8',
@@ -704,7 +741,8 @@ class InMemoryDB {
           confidence: 0.95,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 33.5, xmin: 10.0, ymax: 37.2, xmax: 68.0 }
+          box_2d: [338, 110, 368, 620],
+          bbox: { ymin: 33.8, xmin: 11.0, ymax: 36.8, xmax: 62.0 }
         },
         {
           id: 'd1-4',
@@ -717,7 +755,8 @@ class InMemoryDB {
           confidence: 0.96,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 39.0, xmin: 10.0, ymax: 48.0, xmax: 89.0 }
+          box_2d: [392, 110, 482, 900],
+          bbox: { ymin: 39.2, xmin: 11.0, ymax: 48.2, xmax: 90.0 }
         },
         {
           id: 'd1-5',
@@ -730,7 +769,36 @@ class InMemoryDB {
           confidence: 0.97,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 50.0, xmin: 10.0, ymax: 53.8, xmax: 85.0 }
+          box_2d: [504, 110, 536, 480],
+          bbox: { ymin: 50.4, xmin: 11.0, ymax: 53.6, xmax: 48.0 }
+        },
+        {
+          id: 'd1-batch',
+          field: 'batch_number',
+          label: 'Batch / Lot Code',
+          original_text: 'BATCH: AO-2026-B84',
+          normalized_value: 'AO-2026-B84',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.97,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          box_2d: [504, 495, 536, 800],
+          bbox: { ymin: 50.4, xmin: 49.5, ymax: 53.6, xmax: 80.0 }
+        },
+        {
+          id: 'd1-bb',
+          field: 'best_before',
+          label: 'Best Before / Shelf Life',
+          original_text: '7. BEST BEFORE: 9 Months from Date of Packaging',
+          normalized_value: '9 Months',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.98,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          box_2d: [556, 110, 588, 820],
+          bbox: { ymin: 55.6, xmin: 11.0, ymax: 58.8, xmax: 82.0 }
         },
         {
           id: 'd1-7',
@@ -743,33 +811,36 @@ class InMemoryDB {
           confidence: 0.99,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 61.0, xmin: 10.0, ymax: 64.6, xmax: 62.0 }
+          box_2d: [610, 110, 642, 560],
+          bbox: { ymin: 61.0, xmin: 11.0, ymax: 64.2, xmax: 56.0 }
         },
         {
           id: 'd1-6',
           field: 'consumer_care',
           label: 'Consumer Care Cell Details',
-          original_text: '9. CONSUMER CARE GRIEVANCE CELL: Manager, Consumer Grievance Cell, at Mfd Address. Toll Free: 1800-425-9988 | Email: care@auraorganics.in',
+          original_text: '9. CONSUMER CARE GRIEVANCE CELL: Manager, Consumer Grievance Cell, at Mfd Address above | Toll Free: 1800-425-9988 | Email: care@auraorganics.in',
           normalized_value: 'Manager, Care Cell, Tel: 1800-425-9988, Email: care@auraorganics.in',
           found: true,
           status: 'FOUND',
           confidence: 0.97,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 67.0, xmin: 9.5, ymax: 79.5, xmax: 90.5 }
+          box_2d: [673, 108, 800, 892],
+          bbox: { ymin: 67.3, xmin: 10.8, ymax: 80.0, xmax: 89.2 }
         },
         {
           id: 'd1-barcode',
           field: 'barcode',
           label: 'Barcode / GTIN Number',
-          original_text: '8 906012 345678',
-          normalized_value: '8906012345678',
+          original_text: '8901234567890',
+          normalized_value: '8901234567890',
           found: true,
           status: 'FOUND',
           confidence: 0.99,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 81.5, xmin: 10.0, ymax: 88.5, xmax: 46.0 }
+          box_2d: [820, 116, 887, 450],
+          bbox: { ymin: 82.0, xmin: 11.6, ymax: 88.7, xmax: 45.0 }
         }
       ],
       rule_evaluations: [
@@ -935,6 +1006,7 @@ class InMemoryDB {
       status: 'FAIL',
       screening_score: 35,
       is_demo: true,
+      demo_preset_id: 'demo-violation-shampoo',
       calibration: {
         is_calibrated: false,
         method: 'NONE'
@@ -972,6 +1044,7 @@ class InMemoryDB {
           type: 'Front',
           name: 'shampoo_front_bottle.png',
           url: SAMPLE_IMAGE_SHAMPOO_FRONT,
+          demo_preset_id: 'demo-violation-shampoo',
           quality: {
             overall: 'GOOD',
             blurScore: 92,
@@ -986,6 +1059,7 @@ class InMemoryDB {
           type: 'Back',
           name: 'shampoo_label_back.png',
           url: SAMPLE_IMAGE_VIOLATION_LABEL,
+          demo_preset_id: 'demo-violation-shampoo',
           quality: {
             overall: 'GOOD',
             blurScore: 89,
@@ -998,17 +1072,88 @@ class InMemoryDB {
       ],
       declarations: [
         {
+          id: 'd2-f-brand',
+          field: 'brand_name',
+          label: 'Brand Name / Trademark',
+          original_text: 'RADIANT COSMETICS',
+          normalized_value: 'Radiant Cosmetics',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d2-front',
+          image_type: 'Front',
+          box_2d: [92, 230, 134, 770],
+          bbox: { ymin: 9.2, xmin: 23.0, ymax: 13.4, xmax: 77.0 }
+        },
+        {
+          id: 'd2-f-prod',
+          field: 'product_name',
+          label: 'Generic / Common Product Name',
+          original_text: 'SILK GLOW HERBAL SHAMPOO',
+          normalized_value: 'Silk Glow Herbal Shampoo',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.98,
+          image_id: 'img-d2-front',
+          image_type: 'Front',
+          box_2d: [152, 200, 182, 800],
+          bbox: { ymin: 15.2, xmin: 20.0, ymax: 18.2, xmax: 80.0 }
+        },
+        {
+          id: 'd2-f-claims',
+          field: 'front_claims',
+          label: 'Front Botanical / Quality Claim',
+          original_text: 'HERBAL EXTRACTS',
+          normalized_value: 'Herbal Extracts',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.96,
+          image_id: 'img-d2-front',
+          image_type: 'Front',
+          box_2d: [455, 290, 492, 710],
+          bbox: { ymin: 45.5, xmin: 29.0, ymax: 49.2, xmax: 71.0 }
+        },
+        {
+          id: 'd2-f-qty',
+          field: 'net_quantity',
+          label: 'Net Quantity (Front PDP)',
+          original_text: 'Net Volume: 200 ml',
+          normalized_value: '200 ml',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.97,
+          image_id: 'img-d2-front',
+          image_type: 'Front',
+          box_2d: [735, 130, 770, 500],
+          bbox: { ymin: 73.5, xmin: 13.0, ymax: 77.0, xmax: 50.0 }
+        },
+        {
+          id: 'd2-f-batch',
+          field: 'batch_number',
+          label: 'Batch / Lot Code',
+          original_text: 'Batch: RC-2026-09',
+          normalized_value: 'RC-2026-09',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.95,
+          image_id: 'img-d2-front',
+          image_type: 'Front',
+          box_2d: [835, 130, 868, 460],
+          bbox: { ymin: 83.5, xmin: 13.0, ymax: 86.8, xmax: 46.0 }
+        },
+        {
           id: 'd2-1',
           field: 'product_name',
-          label: 'Generic Product Name',
-          original_text: 'Silk Glow Herbal Shampoo',
-          normalized_value: 'Silk Glow Herbal Shampoo',
+          label: 'Generic Product Name (Back)',
+          original_text: 'Silk Glow Shampoo',
+          normalized_value: 'Silk Glow Shampoo',
           found: true,
           status: 'FOUND',
           confidence: 0.98,
           image_id: 'img-d2-back',
           image_type: 'Back',
-          bbox: { ymin: 18, xmin: 10, ymax: 26, xmax: 90 }
+          box_2d: [205, 110, 240, 680],
+          bbox: { ymin: 20.5, xmin: 11.0, ymax: 24.0, xmax: 68.0 }
         },
         {
           id: 'd2-2',
@@ -1021,46 +1166,50 @@ class InMemoryDB {
           confidence: 0.95,
           image_id: 'img-d2-back',
           image_type: 'Back',
-          bbox: { ymin: 27, xmin: 10, ymax: 33, xmax: 50 }
+          box_2d: [265, 110, 300, 520],
+          bbox: { ymin: 26.5, xmin: 11.0, ymax: 30.0, xmax: 52.0 }
         },
         {
           id: 'd2-3',
           field: 'mrp',
           label: 'Maximum Retail Price (MRP)',
-          original_text: 'Price: 199',
+          original_text: 'Price: 199 (MISSING MRP & TAX STATEMENT!)',
           normalized_value: '199.00 INR',
           found: true,
           status: 'UNCERTAIN',
           confidence: 0.72,
           image_id: 'img-d2-back',
           image_type: 'Back',
-          bbox: { ymin: 34, xmin: 10, ymax: 42, xmax: 90 }
+          box_2d: [325, 110, 360, 900],
+          bbox: { ymin: 32.5, xmin: 11.0, ymax: 36.0, xmax: 90.0 }
         },
         {
           id: 'd2-4',
           field: 'manufacturer_name',
           label: 'Manufacturer Address',
-          original_text: 'Mfd by: Radiant Cosmetics, Mumbai',
+          original_text: 'Mfd by: Radiant Cosmetics, Mumbai (INCOMPLETE POSTAL ADDRESS)',
           normalized_value: 'Radiant Cosmetics, Mumbai',
           found: true,
           status: 'FOUND',
           confidence: 0.88,
           image_id: 'img-d2-back',
           image_type: 'Back',
-          bbox: { ymin: 44, xmin: 10, ymax: 52, xmax: 90 }
+          box_2d: [392, 110, 456, 890],
+          bbox: { ymin: 39.2, xmin: 11.0, ymax: 45.6, xmax: 89.0 }
         },
         {
           id: 'd2-5',
           field: 'mfg_date',
           label: 'Date of Manufacture',
-          original_text: '2026',
+          original_text: '2026 (NO MONTH SPECIFIED - VIOLATION!)',
           normalized_value: '2026',
           found: true,
           status: 'UNCERTAIN',
           confidence: 0.70,
           image_id: 'img-d2-back',
           image_type: 'Back',
-          bbox: { ymin: 53, xmin: 10, ymax: 59, xmax: 60 }
+          box_2d: [485, 110, 520, 880],
+          bbox: { ymin: 48.5, xmin: 11.0, ymax: 52.0, xmax: 88.0 }
         },
         {
           id: 'd2-6',
@@ -1073,6 +1222,20 @@ class InMemoryDB {
           confidence: 0.0,
           image_id: 'img-d2-back',
           image_type: 'Back'
+        },
+        {
+          id: 'd2-7',
+          field: 'country_of_origin',
+          label: 'Country of Origin',
+          original_text: '6. COUNTRY OF ORIGIN: India',
+          normalized_value: 'India',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d2-back',
+          image_type: 'Back',
+          box_2d: [712, 110, 748, 560],
+          bbox: { ymin: 71.2, xmin: 11.0, ymax: 74.8, xmax: 56.0 }
         }
       ],
       rule_evaluations: [
@@ -1151,12 +1314,14 @@ class InMemoryDB {
       sync_status: 'SYNCED',
       screening_score: 64,
       is_demo: true,
+      demo_preset_id: 'demo-spice-glare',
       images: [
         {
           id: 'img-d3-front',
           type: 'Front',
           name: 'spice_mix_front.png',
           url: SAMPLE_IMAGE_SPICE_FRONT,
+          demo_preset_id: 'demo-spice-glare',
           quality: {
             overall: 'GOOD',
             blurScore: 88,
@@ -1171,6 +1336,7 @@ class InMemoryDB {
           type: 'Back',
           name: 'spice_mix_glare.png',
           url: SAMPLE_IMAGE_AMBIGUOUS_LABEL,
+          demo_preset_id: 'demo-spice-glare',
           quality: {
             overall: 'POOR',
             blurScore: 54,
@@ -1187,43 +1353,130 @@ class InMemoryDB {
       ],
       declarations: [
         {
+          id: 'd3-f-brand',
+          field: 'brand_name',
+          label: 'Brand Name / Trademark',
+          original_text: 'SPICE HARVEST',
+          normalized_value: 'Spice Harvest',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.96,
+          image_id: 'img-d3-front',
+          image_type: 'Front',
+          box_2d: [90, 260, 134, 740],
+          bbox: { ymin: 9.0, xmin: 26.0, ymax: 13.4, xmax: 74.0 }
+        },
+        {
+          id: 'd3-f-prod',
+          field: 'product_name',
+          label: 'Generic / Common Product Name',
+          original_text: 'INSTANT MASALA SPICE MIX',
+          normalized_value: 'Instant Masala Spice Mix',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.95,
+          image_id: 'img-d3-front',
+          image_type: 'Front',
+          box_2d: [152, 220, 184, 780],
+          bbox: { ymin: 15.2, xmin: 22.0, ymax: 18.4, xmax: 78.0 }
+        },
+        {
+          id: 'd3-f-qty',
+          field: 'net_quantity',
+          label: 'Net Quantity (Front PDP)',
+          original_text: 'Net Quantity: ~50g (Low Contrast)',
+          normalized_value: '50 g',
+          found: true,
+          status: 'UNCERTAIN',
+          confidence: 0.61,
+          image_id: 'img-d3-front',
+          image_type: 'Front',
+          box_2d: [735, 130, 770, 720],
+          bbox: { ymin: 73.5, xmin: 13.0, ymax: 77.0, xmax: 72.0 }
+        },
+        {
           id: 'd3-1',
           field: 'product_name',
-          label: 'Product Name',
-          original_text: 'Instant Masala Spice Mix',
+          label: 'Product Name (Back)',
+          original_text: 'Product: Instant Masala Spice Mix',
           normalized_value: 'Instant Masala Spice Mix',
           found: true,
           status: 'FOUND',
           confidence: 0.82,
           image_id: 'img-d3-glare',
           image_type: 'Back',
-          bbox: { ymin: 18, xmin: 10, ymax: 25, xmax: 80 }
+          box_2d: [192, 110, 228, 620],
+          bbox: { ymin: 19.2, xmin: 11.0, ymax: 22.8, xmax: 62.0 }
         },
         {
           id: 'd3-2',
           field: 'net_quantity',
           label: 'Net Quantity',
-          original_text: '~50g',
+          original_text: 'Net Qty: ~50g (Low OCR Confidence 58%)',
           normalized_value: '50 g',
           found: true,
           status: 'UNCERTAIN',
           confidence: 0.58,
           image_id: 'img-d3-glare',
           image_type: 'Back',
-          bbox: { ymin: 26, xmin: 10, ymax: 33, xmax: 60 }
+          box_2d: [258, 110, 294, 680],
+          bbox: { ymin: 25.8, xmin: 11.0, ymax: 29.4, xmax: 68.0 }
         },
         {
           id: 'd3-3',
           field: 'mrp',
           label: 'Maximum Retail Price',
-          original_text: 'Rs. 3?',
+          original_text: 'MRP: Rs. 3? (Partial Glare Occlusion)',
           normalized_value: '30.00 INR',
           found: true,
           status: 'UNCERTAIN',
           confidence: 0.52,
           image_id: 'img-d3-glare',
           image_type: 'Back',
-          bbox: { ymin: 34, xmin: 10, ymax: 42, xmax: 60 }
+          box_2d: [325, 110, 360, 680],
+          bbox: { ymin: 32.5, xmin: 11.0, ymax: 36.0, xmax: 68.0 }
+        },
+        {
+          id: 'd3-4',
+          field: 'manufacturer_name',
+          label: 'Manufacturer Name & City',
+          original_text: 'Mfg: Spice Harvest Pvt Ltd, Jaipur',
+          normalized_value: 'Spice Harvest Pvt Ltd, Jaipur',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.85,
+          image_id: 'img-d3-glare',
+          image_type: 'Back',
+          box_2d: [392, 110, 428, 620],
+          bbox: { ymin: 39.2, xmin: 11.0, ymax: 42.8, xmax: 62.0 }
+        },
+        {
+          id: 'd3-5',
+          field: 'mfg_date',
+          label: 'Date of Packaging',
+          original_text: 'Date: 03/26',
+          normalized_value: 'MAR-2026',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.80,
+          image_id: 'img-d3-glare',
+          image_type: 'Back',
+          box_2d: [458, 110, 494, 420],
+          bbox: { ymin: 45.8, xmin: 11.0, ymax: 49.4, xmax: 42.0 }
+        },
+        {
+          id: 'd3-6',
+          field: 'consumer_care',
+          label: 'Consumer Care Helpline',
+          original_text: 'Consumer Care: 0141-2345***',
+          normalized_value: '0141-2345***',
+          found: true,
+          status: 'UNCERTAIN',
+          confidence: 0.56,
+          image_id: 'img-d3-glare',
+          image_type: 'Back',
+          box_2d: [525, 110, 560, 580],
+          bbox: { ymin: 52.5, xmin: 11.0, ymax: 56.0, xmax: 58.0 }
         }
       ],
       rule_evaluations: [
@@ -1322,6 +1575,20 @@ class InMemoryDB {
       ],
       declarations: [
         {
+          id: 'd4-brand',
+          field: 'brand_name',
+          label: 'Brand Name',
+          original_text: 'NutriFit Foods',
+          normalized_value: 'NutriFit Foods',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d4-f',
+          image_type: 'Front',
+          box_2d: [90, 260, 135, 740],
+          bbox: { ymin: 9.0, xmin: 26.0, ymax: 13.5, xmax: 74.0 }
+        },
+        {
           id: 'd4-1',
           field: 'product_name',
           label: 'Product Name',
@@ -1331,7 +1598,9 @@ class InMemoryDB {
           status: 'FOUND',
           confidence: 0.98,
           image_id: 'img-d4-f',
-          image_type: 'Front'
+          image_type: 'Front',
+          box_2d: [152, 140, 192, 860],
+          bbox: { ymin: 15.2, xmin: 14.0, ymax: 19.2, xmax: 86.0 }
         },
         {
           id: 'd4-2',
@@ -1343,7 +1612,9 @@ class InMemoryDB {
           status: 'FOUND',
           confidence: 0.97,
           image_id: 'img-d4-f',
-          image_type: 'Front'
+          image_type: 'Front',
+          box_2d: [715, 130, 760, 780],
+          bbox: { ymin: 71.5, xmin: 13.0, ymax: 76.0, xmax: 78.0 }
         },
         {
           id: 'd4-3',
@@ -1355,7 +1626,9 @@ class InMemoryDB {
           status: 'FOUND',
           confidence: 0.96,
           image_id: 'img-d4-b',
-          image_type: 'Back'
+          image_type: 'Back',
+          box_2d: [232, 110, 262, 820],
+          bbox: { ymin: 23.2, xmin: 11.0, ymax: 26.2, xmax: 82.0 }
         },
         {
           id: 'd4-4',
@@ -1367,7 +1640,9 @@ class InMemoryDB {
           status: 'FOUND',
           confidence: 0.98,
           image_id: 'img-d4-b',
-          image_type: 'Back'
+          image_type: 'Back',
+          box_2d: [284, 110, 316, 820],
+          bbox: { ymin: 28.4, xmin: 11.0, ymax: 31.6, xmax: 82.0 }
         }
       ],
       rule_evaluations: [
@@ -2039,10 +2314,15 @@ class InMemoryDB {
   }
 
   // Certificate Management
-  public getAllCertificates(status?: string, query?: string): ComplianceCertificate[] {
+  public getAllCertificates(status?: string, query?: string, inspectionId?: string): ComplianceCertificate[] {
     let list = Array.from(this.certificates.values()).sort(
       (a, b) => new Date(b.issued_at).getTime() - new Date(a.issued_at).getTime()
     );
+
+    if (inspectionId && inspectionId.trim()) {
+      const targetId = inspectionId.trim();
+      list = list.filter(c => c.inspection_id === targetId);
+    }
 
     if (status && status !== 'ALL') {
       list = list.filter(c => c.status === status);
@@ -2305,11 +2585,18 @@ class InMemoryDB {
 
     // Risk assessment
     const failCount = matchedInspections.filter(i => i.status === 'FAIL').length;
+    const avgScore = matchedInspections.length > 0
+      ? Math.round(matchedInspections.reduce((s, i) => s + (i.screening_score || 0), 0) / matchedInspections.length)
+      : 100;
+    const riskScore = Math.min(100, Math.max(0, Math.round((failCount / Math.max(1, matchedInspections.length)) * 65 + (100 - avgScore) * 0.35)));
     let riskLevel: 'LOW' | 'MODERATE' | 'ELEVATED' | 'CRITICAL' = 'LOW';
+    let riskTier = 'LOW';
     if (failCount >= 2 || matchedCerts.some(c => c.status === 'REVOKED')) {
       riskLevel = 'CRITICAL';
+      riskTier = 'HIGH';
     } else if (failCount === 1) {
       riskLevel = 'ELEVATED';
+      riskTier = 'MEDIUM';
     }
 
     return {
@@ -2321,7 +2608,14 @@ class InMemoryDB {
       inspections: matchedInspections,
       certificates: matchedCerts,
       latest_status: latestStatus,
-      risk_level: riskLevel
+      risk_level: riskLevel,
+      total_inspections: matchedInspections.length,
+      repeat_offender_violations: failCount,
+      manufacturer_risk_profile: found ? {
+        manufacturer_name: brand || 'Registered Manufacturer',
+        risk_score: riskScore,
+        risk_tier: riskTier
+      } : undefined
     };
   }
 

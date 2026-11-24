@@ -140,16 +140,6 @@ export const Header: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (notificationRef.current && !notificationRef.current.contains(event.target as Node)) {
-        setShowNotifications(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
   const handleMarkRead = async (id: string) => {
     try {
       await markNotificationRead(id);
@@ -160,14 +150,15 @@ export const Header: React.FC = () => {
     }
   };
 
-  const handleGtinSearch = async (e?: React.FormEvent) => {
+  const handleGtinSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
     if (e) e.preventDefault();
-    if (!gtinQuery.trim()) return;
+    const queryToUse = (overrideQuery ?? gtinQuery).trim();
+    if (!queryToUse) return;
     setGtinLoading(true);
     setGtinError(null);
     setGtinResult(null);
     try {
-      const result = await searchGtinRegistry(gtinQuery.trim());
+      const result = await searchGtinRegistry(queryToUse);
       setGtinResult(result);
     } catch (err: any) {
       setGtinError(err.message || 'GTIN lookup failed');
@@ -309,11 +300,14 @@ export const Header: React.FC = () => {
                       key={n.id}
                       onClick={() => {
                         handleMarkRead(n.id);
-                        if (n.target_type === 'CERTIFICATE' && n.target_id) {
-                          viewCertificate(n.target_id);
+                        if (n.type === 'CERTIFICATE' && n.certificateId) {
+                          viewCertificate(n.certificateId);
                           setShowNotifications(false);
-                        } else if (n.target_type === 'INSPECTION') {
+                        } else if (n.inspectionId) {
                           setActiveView('inspections');
+                          setShowNotifications(false);
+                        } else if (n.linkView) {
+                          setActiveView(n.linkView as any);
                           setShowNotifications(false);
                         }
                       }}
@@ -323,7 +317,7 @@ export const Header: React.FC = () => {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center space-x-1.5">
-                          {n.severity === 'CRITICAL' ? (
+                          {n.severity === 'ALERT' ? (
                             <AlertTriangle className="h-3.5 w-3.5 text-red-600 shrink-0" />
                           ) : n.severity === 'WARNING' ? (
                             <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
@@ -333,7 +327,7 @@ export const Header: React.FC = () => {
                           <span className="font-bold text-slate-900">{n.title}</span>
                         </div>
                         <span className="text-[10px] text-slate-400 font-mono shrink-0">
-                          {new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {new Date(n.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
                       <p className="mt-1 text-[11px] text-slate-600 leading-relaxed">{n.message}</p>
@@ -593,17 +587,17 @@ export const Header: React.FC = () => {
                 <span className="font-semibold text-[11px] sm:text-xs">Quick samples:</span>
                 <button
                   type="button"
-                  onClick={() => { setGtinQuery('8901030383848'); handleGtinSearch(); }}
+                  onClick={() => { setGtinQuery('8901234567890'); handleGtinSearch(undefined, '8901234567890'); }}
                   className="text-blue-600 hover:underline font-mono bg-blue-50 px-2 py-0.5 rounded border border-blue-200 text-[11px]"
                 >
-                  8901030383848 (Clean Pass)
+                  8901234567890 (Clean Pass)
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setGtinQuery('8901234567890'); handleGtinSearch(); }}
+                  onClick={() => { setGtinQuery('8909876543210'); handleGtinSearch(undefined, '8909876543210'); }}
                   className="text-blue-600 hover:underline font-mono bg-amber-50 px-2 py-0.5 rounded border border-amber-200 text-[11px]"
                 >
-                  8901234567890 (Disputed)
+                  8909876543210 (Violation / Revoked)
                 </button>
               </div>
 
@@ -619,11 +613,11 @@ export const Header: React.FC = () => {
                   <div className="grid grid-cols-3 gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200 text-center">
                     <div>
                       <div className="text-[10px] uppercase font-bold text-slate-500">Historical Inspections</div>
-                      <div className="text-xl font-bold font-mono text-slate-900">{gtinResult.total_inspections}</div>
+                      <div className="text-xl font-bold font-mono text-slate-900">{gtinResult.total_inspections ?? gtinResult.inspections.length}</div>
                     </div>
                     <div>
                       <div className="text-[10px] uppercase font-bold text-slate-500">Repeat Violations</div>
-                      <div className="text-xl font-bold font-mono text-red-600">{gtinResult.repeat_offender_violations}</div>
+                      <div className="text-xl font-bold font-mono text-red-600">{gtinResult.repeat_offender_violations ?? 0}</div>
                     </div>
                     <div>
                       <div className="text-[10px] uppercase font-bold text-slate-500">Compliance Certificates</div>
@@ -641,9 +635,9 @@ export const Header: React.FC = () => {
                         </p>
                       </div>
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase ${
-                        gtinResult.manufacturer_risk_profile.risk_tier === 'HIGH'
+                        ['HIGH', 'CRITICAL', 'ELEVATED'].includes(gtinResult.manufacturer_risk_profile.risk_tier)
                           ? 'bg-red-200 text-red-900'
-                          : gtinResult.manufacturer_risk_profile.risk_tier === 'MEDIUM'
+                          : ['MEDIUM', 'MODERATE'].includes(gtinResult.manufacturer_risk_profile.risk_tier)
                           ? 'bg-amber-200 text-amber-900'
                           : 'bg-emerald-200 text-emerald-900'
                       }`}>
