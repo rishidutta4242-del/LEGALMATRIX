@@ -385,3 +385,5 @@ function generateMarketplacePackagingSvg(data: {
     platform
   };
 }
+
+export const resolveMarketplaceProduct = fetchRealProductFromUrl;

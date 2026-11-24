@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { fetchDashboardStats } from '../services/api';
-import { DashboardStats } from '../types/index';
+import { fetchDashboardStats, fetchManufacturerRiskProfiles } from '../services/api';
+import { DashboardStats, ManufacturerRiskProfile } from '../types/index';
 import {
   ShieldAlert,
   ShieldCheck,
@@ -24,13 +24,18 @@ import {
   RefreshCw,
   MessageSquare,
   Award,
-  FileCheck
+  FileCheck,
+  AlertOctagon,
+  ChevronRight,
+  Filter
 } from 'lucide-react';
 
 export const DashboardView: React.FC = () => {
   const { setActiveView, viewInspection, isOnline, offlineQueueCount, showToast, officerRole } = useApp();
   const isCitizen = officerRole === 'Citizen';
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [riskProfiles, setRiskProfiles] = useState<ManufacturerRiskProfile[]>([]);
+  const [riskFilter, setRiskFilter] = useState<'ALL' | 'CRITICAL' | 'ELEVATED' | 'MODERATE' | 'LOW'>('ALL');
   const [loading, setLoading] = useState<boolean>(true);
   const [filterText, setFilterText] = useState<string>('');
 
@@ -41,8 +46,12 @@ export const DashboardView: React.FC = () => {
   const loadStats = async () => {
     try {
       setLoading(true);
-      const data = await fetchDashboardStats();
-      setStats(data);
+      const [statsData, riskData] = await Promise.all([
+        fetchDashboardStats(),
+        fetchManufacturerRiskProfiles(90).catch(() => [])
+      ]);
+      setStats(statsData);
+      setRiskProfiles(riskData);
     } catch (err) {
       console.error('Failed to load dashboard statistics:', err);
     } finally {
@@ -450,6 +459,177 @@ export const DashboardView: React.FC = () => {
           >
             Generate Statutory Summary
           </button>
+        </div>
+      </div>
+
+      {/* Manufacturer Risk Profile Rankings (Section 36 Surveillance Matrix) */}
+      <div className="bg-white border border-slate-200 shadow-xs rounded-xl overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center space-x-2">
+              <AlertOctagon className="h-4 w-4 text-rose-600" />
+              <h3 className="text-xs font-bold uppercase tracking-widest text-slate-800">
+                Manufacturer Compliance &amp; Risk Profile Rankings
+              </h3>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200">
+                Sec 36 Enforcement Matrix
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-1">
+              Surveillance intelligence scoring repeat compliance infringements and legal action readiness across 90 days
+            </p>
+          </div>
+
+          {/* Tier Filters */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {(['ALL', 'CRITICAL', 'ELEVATED', 'MODERATE', 'LOW'] as const).map((tier) => {
+              const count =
+                tier === 'ALL'
+                  ? riskProfiles.length
+                  : riskProfiles.filter((p) => p.risk_level === tier).length;
+              return (
+                <button
+                  key={tier}
+                  onClick={() => setRiskFilter(tier)}
+                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition cursor-pointer flex items-center space-x-1 ${
+                    riskFilter === tier
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  <span>{tier}</span>
+                  <span className="text-[10px] opacity-75 font-mono">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* High-density risk table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                <th className="p-3 pl-4">Rank</th>
+                <th className="p-3">Manufacturer / Brand</th>
+                <th className="p-3">Risk Tier &amp; Score</th>
+                <th className="p-3">Compliance Ratio</th>
+                <th className="p-3">Violations</th>
+                <th className="p-3">Top Infringed Declarations</th>
+                <th className="p-3">Statutory Directive (Sec 36)</th>
+                <th className="p-3 pr-4 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-xs">
+              {riskProfiles
+                .filter((p) => (riskFilter === 'ALL' ? true : p.risk_level === riskFilter))
+                .filter((p) => !filterText || p.brand_or_mfr.toLowerCase().includes(filterText.toLowerCase()))
+                .length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-8 text-center text-slate-400 text-xs">
+                    No manufacturer records matching selected risk filter.
+                  </td>
+                </tr>
+              ) : (
+                riskProfiles
+                  .filter((p) => (riskFilter === 'ALL' ? true : p.risk_level === riskFilter))
+                  .filter((p) => !filterText || p.brand_or_mfr.toLowerCase().includes(filterText.toLowerCase()))
+                  .map((p, idx) => {
+                    const badgeClasses =
+                      p.risk_level === 'CRITICAL'
+                        ? 'bg-rose-100 text-rose-800 border-rose-300'
+                        : p.risk_level === 'ELEVATED'
+                        ? 'bg-amber-100 text-amber-800 border-amber-300'
+                        : p.risk_level === 'MODERATE'
+                        ? 'bg-yellow-100 text-yellow-800 border-yellow-300'
+                        : 'bg-emerald-100 text-emerald-800 border-emerald-300';
+
+                    const barClasses =
+                      p.risk_level === 'CRITICAL'
+                        ? 'bg-rose-600'
+                        : p.risk_level === 'ELEVATED'
+                        ? 'bg-amber-500'
+                        : p.risk_level === 'MODERATE'
+                        ? 'bg-yellow-500'
+                        : 'bg-emerald-500';
+
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50/70 transition">
+                        <td className="p-3 pl-4 font-mono font-bold text-slate-400">
+                          #{idx + 1}
+                        </td>
+                        <td className="p-3">
+                          <div className="font-bold text-slate-900">{p.brand_or_mfr}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {p.total_inspections} Audited Package{p.total_inspections !== 1 ? 's' : ''}
+                          </div>
+                        </td>
+                        <td className="p-3 min-w-[140px]">
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className={`inline-block px-1.5 py-0.5 text-[9px] font-bold rounded border ${badgeClasses}`}>
+                              {p.risk_level}
+                            </span>
+                            <span className="font-mono font-bold text-slate-800 text-xs">
+                              {p.risk_score}/100
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${barClasses}`}
+                              style={{ width: `${Math.max(p.risk_score, 5)}%` }}
+                            />
+                          </div>
+                        </td>
+                        <td className="p-3 font-mono">
+                          <div className="text-slate-800 font-bold">
+                            {p.passed_count}/{p.total_inspections} Passed
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            {p.total_inspections > 0 ? Math.round((p.passed_count / p.total_inspections) * 100) : 100}% Pass Rate
+                          </div>
+                        </td>
+                        <td className="p-3 font-mono">
+                          <span className={`inline-block px-2 py-0.5 rounded font-bold text-xs ${
+                            p.violations_count > 0 ? 'bg-red-50 text-red-700' : 'bg-slate-50 text-slate-600'
+                          }`}>
+                            {p.violations_count}
+                          </span>
+                        </td>
+                        <td className="p-3 max-w-[220px]">
+                          <div className="flex flex-wrap gap-1">
+                            {p.top_violated_rules.map((rule, rIdx) => (
+                              <span
+                                key={rIdx}
+                                className="text-[10px] font-medium bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded truncate max-w-[200px]"
+                                title={rule}
+                              >
+                                {rule}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="p-3 text-[11px] text-slate-700 max-w-[240px]">
+                          <span className="line-clamp-2" title={p.recommended_action}>
+                            {p.recommended_action}
+                          </span>
+                        </td>
+                        <td className="p-3 pr-4 text-right">
+                          <button
+                            onClick={() => {
+                              setActiveView('inspections');
+                            }}
+                            className="inline-flex items-center space-x-1 text-xs font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
+                          >
+                            <span>Filter</span>
+                            <ArrowRight className="h-3 w-3" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

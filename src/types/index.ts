@@ -55,6 +55,9 @@ export interface InspectionImage {
   name: string;
   sizeBytes?: number;
   sha256?: string;
+  preprocessed_url?: string;
+  thresholded_url?: string;
+  preprocessing_steps?: string[];
   quality?: {
     overall: 'GOOD' | 'FAIR' | 'POOR';
     blurScore: number; // 0-100 (higher = sharper)
@@ -77,6 +80,7 @@ export interface ExtractedDeclaration {
   image_id: string;
   image_type?: ImageType;
   bbox?: ImageBoundingBox;
+  box_2d?: [number, number, number, number] | number[];
   notes?: string;
   // Multilingual / Regional-Script Support
   script?: 'Latin' | 'Devanagari' | 'Tamil' | 'Telugu' | 'Bengali' | 'Other';

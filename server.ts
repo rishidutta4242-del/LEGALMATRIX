@@ -5,7 +5,8 @@ import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { db } from './server/db';
-import { analyzePackageImagesWithGemini } from './server/geminiService';
+import { analyzePackageImagesWithGemini, recalibrateFrontOcr } from './server/geminiService';
+import { preprocessImageForOcr } from './server/imagePreprocessor';
 import { LegalMetrologyRuleEngine } from './server/ruleEngine';
 import {
   InspectionRecord,
@@ -198,7 +199,7 @@ async function startServer() {
       public_verification_url: `/verify/${certId}`
     };
 
-    db.saveCertificate(cert);
+    db.createCertificate(cert);
     db.logSystemAudit({
       category: 'CERTIFICATE_ACTION',
       actor_name: officerName,
@@ -384,7 +385,7 @@ async function startServer() {
         integrity_status: 'VERIFIED_INTACT'
       };
 
-      // 7. Update and Persist Inspection Record
+      // 7. Update and Persist Inspection Record with OCR Preprocessed Evidence
       const isPackageDetected = extraction.is_package_detected !== false;
       const finalStatus = !isPackageDetected ? 'NO_PACKAGE_DETECTED' : evaluationResult.overallStatus;
       const finalScore = !isPackageDetected ? 0 : evaluationResult.screeningScore;
@@ -392,11 +393,29 @@ async function startServer() {
         ? 'Screening halted: Real-time object detection verified that no retail packaged commodity or statutory Legal Metrology declarations were present in the captured frame(s). Please align the camera directly on the commodity packaging label.'
         : evaluationResult.plainLanguageSummary;
 
+      // Attach Sharp preprocessed URLs to images for forensic and readability inspection
+      let enrichedImages = imagesToAnalyze;
+      if (extraction.preprocessed_images && extraction.preprocessed_images.length > 0) {
+        enrichedImages = imagesToAnalyze.map((img: any, idx: number) => {
+          const prep = extraction.preprocessed_images?.find((p) => p.id === img.id || p.type === img.type) || extraction.preprocessed_images?.[idx];
+          if (prep) {
+            return {
+              ...img,
+              preprocessed_url: prep.preprocessedUri,
+              thresholded_url: prep.thresholdedUri,
+              preprocessing_steps: prep.steps
+            };
+          }
+          return img;
+        });
+      }
+
       const updated = db.updateInspection(id, {
         product_name: extraction.product.name || inspection.product_name,
         brand: extraction.product.brand || inspection.brand,
         status: finalStatus,
         screening_score: finalScore,
+        images: enrichedImages,
         declarations: extraction.declarations,
         rule_evaluations: evaluationResult.evaluations,
         cross_image_checks: evaluationResult.crossImageChecks,
@@ -443,6 +462,31 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error during AI inspection analysis:', err);
       res.status(500).json({ error: 'Inspection analysis failed', details: err.message });
+    }
+  });
+
+  // Dedicated OCR Image Preprocessing Endpoint (Sharp-powered grayscale, contrast normalization, thresholding)
+  app.post('/api/images/preprocess', async (req: Request, res: Response) => {
+    try {
+      const { image_url, name } = req.body;
+      if (!image_url || typeof image_url !== 'string') {
+        return res.status(400).json({ error: 'image_url string is required for OCR preprocessing' });
+      }
+
+      const result = await preprocessImageForOcr(image_url, name || 'Package Label');
+      res.json({
+        success: true,
+        data: {
+          original_mime: result.metadata.format ? `image/${result.metadata.format}` : 'image/jpeg',
+          dimensions: `${result.metadata.width || 0}x${result.metadata.height || 0}`,
+          preprocessed_url: result.grayscaleDataUri,
+          thresholded_url: result.thresholdedDataUri,
+          steps: result.preprocessingSteps
+        }
+      });
+    } catch (err: any) {
+      console.error('Error during OCR image preprocessing:', err);
+      res.status(500).json({ error: 'Image preprocessing failed', details: err.message });
     }
   });
 
@@ -618,6 +662,143 @@ async function startServer() {
     }
   });
 
+  // High-Precision Front OCR Recalibration Endpoint
+  app.post('/api/inspections/:id/recalibrate-front-ocr', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const inspection = db.getInspection(id);
+      if (!inspection) {
+        return res.status(404).json({ error: 'Inspection record not found' });
+      }
+
+      const frontImage = inspection.images.find(i => i.type?.toLowerCase() === 'front') || inspection.images[0];
+      if (!frontImage) {
+        return res.status(400).json({ error: 'No Front panel image found for this inspection.' });
+      }
+
+      const newFrontDecls = await recalibrateFrontOcr(frontImage, {
+        productName: inspection.product_name,
+        brand: inspection.brand,
+        category: inspection.category,
+        barcode: inspection.barcode
+      });
+
+      // Retain back/other declarations, replace front declarations
+      const existingBackDecls = inspection.declarations.filter(d => 
+        d.image_type?.toLowerCase() === 'back' || 
+        (d.image_id && d.image_id !== frontImage.id && d.image_type !== 'Front')
+      );
+
+      // Merge declarations cleanly
+      const mergedDeclarations = [...newFrontDecls, ...existingBackDecls];
+
+      // Re-evaluate rules with the updated declarations
+      const ruleEngine = new LegalMetrologyRuleEngine(db.getRules());
+      const evaluationResult = ruleEngine.evaluateInspection(
+        mergedDeclarations,
+        inspection.images.map(img => ({ id: img.id, type: img.type })),
+        inspection.category
+      );
+
+      const passCount = evaluationResult.evaluations.filter(r => r.status === 'PASS').length;
+      const totalRules = evaluationResult.evaluations.length;
+      const newScore = evaluationResult.screeningScore ?? (totalRules > 0 ? Math.round((passCount / totalRules) * 100) : inspection.screening_score);
+      const newStatus = evaluationResult.overallStatus ?? (evaluationResult.evaluations.some(r => r.status === 'FAIL') ? 'FAIL' : 'PASS');
+
+      const updated = db.updateInspection(id, {
+        declarations: mergedDeclarations,
+        rule_evaluations: evaluationResult.evaluations,
+        cross_image_checks: evaluationResult.crossImageChecks,
+        screening_score: newScore,
+        status: newStatus
+      });
+
+      db.logSystemAudit({
+        category: 'CONFIG_CHANGE',
+        actor_name: req.body.officer_name || 'Enforcement Officer',
+        actor_role: 'Inspector',
+        action: 'FRONT_OCR_RECALIBRATED',
+        target: id,
+        changes: [
+          { field: 'front_declarations', before: inspection.declarations.filter(d => d.image_type === 'Front').length, after: newFrontDecls.length },
+          { field: 'score', before: inspection.screening_score, after: newScore }
+        ],
+        rationale: 'High-precision optical calibration applied to Principal Display Panel (PDP).'
+      });
+
+      res.json({ success: true, inspection: updated });
+    } catch (err: any) {
+      console.error('Failed to recalibrate front OCR:', err);
+      res.status(500).json({ error: 'Failed to recalibrate front panel OCR: ' + err.message });
+    }
+  });
+
+  // Bounding Box Fine-Tuning Calibration Endpoint
+  app.post('/api/inspections/:id/calibrate-box', (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { field, bbox, box_2d, officer_name } = req.body;
+      if (!field || (!bbox && !box_2d)) {
+        return res.status(400).json({ error: 'Field name and bbox coordinates required.' });
+      }
+
+      const inspection = db.getInspection(id);
+      if (!inspection) {
+        return res.status(404).json({ error: 'Inspection not found.' });
+      }
+
+      let updatedBbox = bbox;
+      let updatedBox2d = box_2d;
+
+      if (!updatedBbox && updatedBox2d) {
+        updatedBbox = {
+          ymin: updatedBox2d[0] / 10,
+          xmin: updatedBox2d[1] / 10,
+          ymax: updatedBox2d[2] / 10,
+          xmax: updatedBox2d[3] / 10
+        };
+      } else if (updatedBbox && !updatedBox2d) {
+        updatedBox2d = [
+          Math.round(updatedBbox.ymin * 10),
+          Math.round(updatedBbox.xmin * 10),
+          Math.round(updatedBbox.ymax * 10),
+          Math.round(updatedBbox.xmax * 10)
+        ];
+      }
+
+      const updatedDeclarations = inspection.declarations.map(decl => {
+        if (decl.field === field) {
+          return {
+            ...decl,
+            bbox: updatedBbox,
+            box_2d: updatedBox2d,
+            notes: (decl.notes ? decl.notes + ' ' : '') + '[Calibrated by Officer]'
+          };
+        }
+        return decl;
+      });
+
+      const updated = db.updateInspection(id, {
+        declarations: updatedDeclarations
+      });
+
+      db.logSystemAudit({
+        category: 'CONFIG_CHANGE',
+        actor_name: officer_name || 'Enforcement Officer',
+        actor_role: 'Inspector',
+        action: 'BOUNDING_BOX_CALIBRATION',
+        target: `${id}:${field}`,
+        changes: [{ field: 'bbox', before: null, after: updatedBbox }],
+        rationale: `Manual bounding box calibration recorded for statutory field ${field}.`
+      });
+
+      res.json({ success: true, inspection: updated });
+    } catch (err: any) {
+      console.error('Failed to calibrate bounding box:', err);
+      res.status(500).json({ error: 'Failed to calibrate bounding box' });
+    }
+  });
+
   // Get Rules Repository
   app.get('/api/rules', (req: Request, res: Response) => {
     res.json(db.getRules());
@@ -717,8 +898,10 @@ async function startServer() {
           mrp: result.mrp,
           net_quantity: result.net_quantity,
           platform: result.platform,
-          source_url: result.source_url
+          source_url: result.source_url,
+          image: result.image
         },
+        image: result.image,
         images: [result.image]
       });
     } catch (err: any) {
@@ -741,7 +924,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Valid product URL is required.' });
       }
       const product = await fetchRealProductFromUrl(url);
-      res.json({ success: true, product });
+      res.json({ success: true, product, image: product.image, images: [product.image] });
     } catch (err: any) {
       console.error('URL intake failed:', err);
       res.status(500).json({ error: err.message || 'Failed to process URL' });
@@ -903,7 +1086,95 @@ async function startServer() {
             if (!isPackageDetected) {
               finalStatus = 'NO_PACKAGE_DETECTED';
               finalScore = 0;
-              finalSummary = 'Optical verification halted: image does not contain a consumer packaged commodity.';
+              finalSummary = 'Optical verification halted: image does not contain a consumer packaged commodity or statutory packaging declarations.';
+              evaluations = [
+                {
+                  rule_id: 'RULE-PACKAGE-PRESENCE',
+                  field: 'package_presence',
+                  title: 'Packaged Commodity Optical Presence',
+                  normative_reference: 'Section 18, Legal Metrology Act, 2009 & Rule 6, LMPC Rules, 2011',
+                  status: 'FAIL' as ComplianceStatus,
+                  severity: 'HIGH' as const,
+                  reason: 'Optical detection halted: No consumer packaged commodity or statutory label declarations detected in the submitted image.',
+                  confidence: 0,
+                  evidence_images: [],
+                  evidence_text: '',
+                  applicable_version: '2026.1',
+                  version_in_force_note: 'Physical packaged commodity presence is mandatory for statutory compliance evaluation'
+                },
+                {
+                  rule_id: 'RULE-6-1-A',
+                  field: 'product_name',
+                  title: 'Generic / Common Product Name',
+                  normative_reference: 'Rule 6(1)(a), Legal Metrology (Packaged Commodities) Rules, 2011',
+                  status: 'FAIL' as ComplianceStatus,
+                  severity: 'HIGH' as const,
+                  reason: 'Commodity packaging not detected — product name declaration absent.',
+                  confidence: 0,
+                  evidence_images: [],
+                  evidence_text: ''
+                },
+                {
+                  rule_id: 'RULE-6-1-B',
+                  field: 'net_quantity',
+                  title: 'Net Quantity Declaration',
+                  normative_reference: 'Rule 6(1)(b), Legal Metrology (Packaged Commodities) Rules, 2011',
+                  status: 'FAIL' as ComplianceStatus,
+                  severity: 'HIGH' as const,
+                  reason: 'Commodity packaging not detected — net quantity declaration absent.',
+                  confidence: 0,
+                  evidence_images: [],
+                  evidence_text: ''
+                },
+                {
+                  rule_id: 'RULE-6-1-C',
+                  field: 'mrp',
+                  title: 'Maximum Retail Price (MRP)',
+                  normative_reference: 'Rule 6(1)(c), Legal Metrology (Packaged Commodities) Rules, 2011',
+                  status: 'FAIL' as ComplianceStatus,
+                  severity: 'HIGH' as const,
+                  reason: 'Commodity packaging not detected — MRP declaration absent.',
+                  confidence: 0,
+                  evidence_images: [],
+                  evidence_text: ''
+                },
+                {
+                  rule_id: 'RULE-6-1-D',
+                  field: 'manufacturer_name',
+                  title: 'Manufacturer / Packer Name & Complete Address',
+                  normative_reference: 'Rule 6(1)(a) & (b), Legal Metrology (Packaged Commodities) Rules, 2011',
+                  status: 'FAIL' as ComplianceStatus,
+                  severity: 'HIGH' as const,
+                  reason: 'Commodity packaging not detected — manufacturer details absent.',
+                  confidence: 0,
+                  evidence_images: [],
+                  evidence_text: ''
+                },
+                {
+                  rule_id: 'RULE-6-1-E',
+                  field: 'mfg_date',
+                  title: 'Month & Year of Manufacture / Packing',
+                  normative_reference: 'Rule 6(1)(d), Legal Metrology (Packaged Commodities) Rules, 2011',
+                  status: 'FAIL' as ComplianceStatus,
+                  severity: 'HIGH' as const,
+                  reason: 'Commodity packaging not detected — manufacturing date absent.',
+                  confidence: 0,
+                  evidence_images: [],
+                  evidence_text: ''
+                },
+                {
+                  rule_id: 'RULE-6-1-N',
+                  field: 'consumer_care',
+                  title: 'Consumer Grievance Care Cell Details',
+                  normative_reference: 'Rule 6(1)(n), Legal Metrology (Packaged Commodities) Rules, 2011',
+                  status: 'FAIL' as ComplianceStatus,
+                  severity: 'HIGH' as const,
+                  reason: 'Commodity packaging not detected — consumer care details absent.',
+                  confidence: 0,
+                  evidence_images: [],
+                  evidence_text: ''
+                }
+              ];
             } else {
               const evalRes = db.getRuleEngine().evaluateInspection(
                 extraction.declarations,
@@ -1100,6 +1371,36 @@ async function startServer() {
     } catch (err: any) {
       console.error('Failed to fetch certificates:', err);
       res.status(500).json({ error: 'Failed to fetch certificates' });
+    }
+  });
+
+  // Create or register a certificate directly
+  app.post('/api/certificates', (req: Request, res: Response) => {
+    try {
+      const body = req.body;
+      if (body.certificate_id && body.inspection_id) {
+        const saved = db.createCertificate(body);
+        return res.status(201).json({ success: true, certificate: saved });
+      }
+
+      if (body.inspection_id) {
+        const inspection = db.getInspection(body.inspection_id);
+        if (!inspection) {
+          return res.status(404).json({ error: `Inspection "${body.inspection_id}" not found.` });
+        }
+        const cert = autoIssueComplianceCertificate(
+          inspection,
+          body.officer_name || body.inspecting_officer?.name,
+          body.officer_role || body.inspecting_officer?.role,
+          body.officer_badge_id || body.inspecting_officer?.badge_id
+        );
+        return res.status(201).json({ success: true, certificate: cert });
+      }
+
+      return res.status(400).json({ error: 'inspection_id or certificate_id is required to create a certificate' });
+    } catch (err: any) {
+      console.error('Failed to save certificate:', err);
+      res.status(500).json({ error: 'Failed to create certificate' });
     }
   });
 

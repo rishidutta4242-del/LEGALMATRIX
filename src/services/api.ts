@@ -154,6 +154,38 @@ export async function verifyInspection(
   return res.json();
 }
 
+export async function recalibrateFrontOcrApi(
+  id: string,
+  officer_name?: string
+): Promise<{ success: boolean; inspection: InspectionRecord }> {
+  const res = await fetch(`${API_BASE}/inspections/${id}/recalibrate-front-ocr`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ officer_name: officer_name || 'Enforcement Officer' }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Recalibration failed' }));
+    throw new Error(err.error || 'Failed to recalibrate front OCR');
+  }
+  return res.json();
+}
+
+export async function calibrateBoxApi(
+  id: string,
+  calibration: { field: string; bbox?: any; box_2d?: number[]; officer_name?: string }
+): Promise<{ success: boolean; inspection: InspectionRecord }> {
+  const res = await fetch(`${API_BASE}/inspections/${id}/calibrate-box`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(calibration),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Calibration failed' }));
+    throw new Error(err.error || 'Failed to calibrate bounding box');
+  }
+  return res.json();
+}
+
 export async function fetchRules(): Promise<RuleDefinition[]> {
   const res = await fetch(`${API_BASE}/rules`);
   if (!res.ok) throw new Error('Failed to fetch rules');

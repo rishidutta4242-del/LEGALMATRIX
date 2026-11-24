@@ -616,6 +616,19 @@ class InMemoryDB {
       ],
       declarations: [
         {
+          id: 'd1-brand',
+          field: 'brand_name',
+          label: 'Brand Name / Trademark',
+          original_text: 'AURA ORGANICS',
+          normalized_value: 'Aura Organics',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d1-f',
+          image_type: 'Front',
+          bbox: { ymin: 7.5, xmin: 18.0, ymax: 14.0, xmax: 82.0 }
+        },
+        {
           id: 'd1-1',
           field: 'product_name',
           label: 'Generic / Common Product Name',
@@ -626,7 +639,20 @@ class InMemoryDB {
           confidence: 0.99,
           image_id: 'img-d1-f',
           image_type: 'Front',
-          bbox: { ymin: 15, xmin: 10, ymax: 25, xmax: 90 }
+          bbox: { ymin: 15.0, xmin: 12.0, ymax: 20.5, xmax: 88.0 }
+        },
+        {
+          id: 'd1-claims',
+          field: 'front_claims',
+          label: 'Front Dietary / Statutory Claim',
+          original_text: '100% WHOLE GRAIN • HIGH FIBRE • ZERO TRANS FAT',
+          normalized_value: '100% Whole Grain, High Fibre',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.98,
+          image_id: 'img-d1-f',
+          image_type: 'Front',
+          bbox: { ymin: 45.0, xmin: 24.0, ymax: 50.0, xmax: 76.0 }
         },
         {
           id: 'd1-2',
@@ -639,85 +665,111 @@ class InMemoryDB {
           confidence: 0.98,
           image_id: 'img-d1-f',
           image_type: 'Front',
-          bbox: { ymin: 72, xmin: 12, ymax: 82, xmax: 85 }
+          bbox: { ymin: 71.0, xmin: 12.0, ymax: 76.0, xmax: 72.0 }
+        },
+        {
+          id: 'd1-veg',
+          field: 'veg_non_veg',
+          label: 'Dietary Classification Mark',
+          original_text: 'Vegetarian Symbol (Green Dot in Square)',
+          normalized_value: '100% Vegetarian',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d1-f',
+          image_type: 'Front',
+          bbox: { ymin: 82.0, xmin: 12.0, ymax: 87.5, xmax: 68.0 }
         },
         {
           id: 'd1-3',
           field: 'mrp',
           label: 'Maximum Retail Price (MRP)',
-          original_text: '₹75.00 (Incl. of all taxes)',
+          original_text: '3. MRP (INCL. TAXES): ₹75.00',
           normalized_value: '75.00 INR',
           found: true,
           status: 'FOUND',
           confidence: 0.99,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 28, xmin: 10, ymax: 36, xmax: 90 }
-        },
-        {
-          id: 'd1-4',
-          field: 'manufacturer_name',
-          label: 'Manufacturer / Packer Name & Address',
-          original_text: 'Aura Organics Foods Pvt Ltd, Plot 14, Phase III, KIADB Industrial Area, Bengaluru, Karnataka - 560058, India.',
-          normalized_value: 'Aura Organics Foods Pvt Ltd, Plot 14, Phase III, KIADB Industrial Area, Bengaluru - 560058',
-          found: true,
-          status: 'FOUND',
-          confidence: 0.96,
-          image_id: 'img-d1-b',
-          image_type: 'Back',
-          bbox: { ymin: 40, xmin: 10, ymax: 50, xmax: 90 }
-        },
-        {
-          id: 'd1-5',
-          field: 'mfg_date',
-          label: 'Month & Year of Packing',
-          original_text: 'Date of Packing: 04/2026',
-          normalized_value: 'APR-2026',
-          found: true,
-          status: 'FOUND',
-          confidence: 0.97,
-          image_id: 'img-d1-b',
-          image_type: 'Back',
-          bbox: { ymin: 51, xmin: 10, ymax: 57, xmax: 60 }
-        },
-        {
-          id: 'd1-6',
-          field: 'consumer_care',
-          label: 'Consumer Care Cell Details',
-          original_text: 'Manager, Consumer Grievance Cell, at Mfd Address. Toll Free: 1800-425-9988 | Email: care@auraorganics.in',
-          normalized_value: 'Manager, Care Cell, Tel: 1800-425-9988, Email: care@auraorganics.in',
-          found: true,
-          status: 'FOUND',
-          confidence: 0.97,
-          image_id: 'img-d1-b',
-          image_type: 'Back',
-          bbox: { ymin: 66, xmin: 10, ymax: 78, xmax: 90 }
-        },
-        {
-          id: 'd1-7',
-          field: 'country_of_origin',
-          label: 'Country of Origin',
-          original_text: 'Country of Origin: India',
-          normalized_value: 'India',
-          found: true,
-          status: 'FOUND',
-          confidence: 0.99,
-          image_id: 'img-d1-b',
-          image_type: 'Back',
-          bbox: { ymin: 62, xmin: 10, ymax: 67, xmax: 60 }
+          bbox: { ymin: 28.2, xmin: 10.0, ymax: 31.8, xmax: 85.0 }
         },
         {
           id: 'd1-8',
           field: 'unit_sale_price',
           label: 'Unit Sale Price (USP)',
-          original_text: 'Unit Sale Price: ₹0.38 / g',
+          original_text: '4. UNIT SALE PRICE: ₹0.38 / g',
           normalized_value: '0.38 INR/g',
           found: true,
           status: 'FOUND',
           confidence: 0.95,
           image_id: 'img-d1-b',
           image_type: 'Back',
-          bbox: { ymin: 34, xmin: 10, ymax: 40, xmax: 60 }
+          bbox: { ymin: 33.5, xmin: 10.0, ymax: 37.2, xmax: 68.0 }
+        },
+        {
+          id: 'd1-4',
+          field: 'manufacturer_name',
+          label: 'Manufacturer / Packer Name & Address',
+          original_text: '5. MFD & PACKED BY: Aura Organics Foods Pvt Ltd, Plot 14, Phase III, KIADB Industrial Area, Bengaluru, Karnataka - 560058, India.',
+          normalized_value: 'Aura Organics Foods Pvt Ltd, Plot 14, Phase III, KIADB Industrial Area, Bengaluru - 560058',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.96,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          bbox: { ymin: 39.0, xmin: 10.0, ymax: 48.0, xmax: 89.0 }
+        },
+        {
+          id: 'd1-5',
+          field: 'mfg_date',
+          label: 'Month & Year of Packing',
+          original_text: '6. DATE OF PACKING: 04/2026',
+          normalized_value: 'APR-2026',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.97,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          bbox: { ymin: 50.0, xmin: 10.0, ymax: 53.8, xmax: 85.0 }
+        },
+        {
+          id: 'd1-7',
+          field: 'country_of_origin',
+          label: 'Country of Origin',
+          original_text: '8. COUNTRY OF ORIGIN: India',
+          normalized_value: 'India',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          bbox: { ymin: 61.0, xmin: 10.0, ymax: 64.6, xmax: 62.0 }
+        },
+        {
+          id: 'd1-6',
+          field: 'consumer_care',
+          label: 'Consumer Care Cell Details',
+          original_text: '9. CONSUMER CARE GRIEVANCE CELL: Manager, Consumer Grievance Cell, at Mfd Address. Toll Free: 1800-425-9988 | Email: care@auraorganics.in',
+          normalized_value: 'Manager, Care Cell, Tel: 1800-425-9988, Email: care@auraorganics.in',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.97,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          bbox: { ymin: 67.0, xmin: 9.5, ymax: 79.5, xmax: 90.5 }
+        },
+        {
+          id: 'd1-barcode',
+          field: 'barcode',
+          label: 'Barcode / GTIN Number',
+          original_text: '8 906012 345678',
+          normalized_value: '8906012345678',
+          found: true,
+          status: 'FOUND',
+          confidence: 0.99,
+          image_id: 'img-d1-b',
+          image_type: 'Back',
+          bbox: { ymin: 81.5, xmin: 10.0, ymax: 88.5, xmax: 46.0 }
         }
       ],
       rule_evaluations: [

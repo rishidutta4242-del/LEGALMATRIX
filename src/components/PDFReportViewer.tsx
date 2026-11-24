@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { jsPDF } from 'jspdf';
 import { NationalEmblemIndia } from './IndianStateEmblem';
@@ -14,12 +14,39 @@ import {
   Calendar,
   UserCheck,
   CheckCircle,
-  XCircle
+  XCircle,
+  Database,
+  Layers,
+  FileCheck,
+  ImageIcon
 } from 'lucide-react';
+import { normalizeImageUrl } from '../utils/imageUtils';
+import { PREDEFINED_DEMO_PACKAGES } from '../data/demoPackages';
 
 export const PDFReportViewer: React.FC = () => {
   const { currentInspection, setActiveView, showToast, officerRole } = useApp();
   const isCitizen = officerRole === 'Citizen';
+
+  const matchedPreset = useMemo(() => {
+    if (!currentInspection) return null;
+    return (
+      PREDEFINED_DEMO_PACKAGES.find(
+        (p) =>
+          (p.barcode && currentInspection.barcode && p.barcode === currentInspection.barcode) ||
+          (p.productName &&
+            currentInspection.product_name &&
+            p.productName.toLowerCase().trim() === currentInspection.product_name.toLowerCase().trim()) ||
+          (currentInspection.product_name &&
+            (p.productName.toLowerCase().includes(currentInspection.product_name.toLowerCase()) ||
+              currentInspection.product_name.toLowerCase().includes(p.productName.toLowerCase()))) ||
+          (currentInspection.id &&
+            ((currentInspection.id.includes('001') && p.id === 'demo-compliant-cookies') ||
+              (currentInspection.id.includes('002') && p.id === 'demo-violation-shampoo') ||
+              (currentInspection.id.includes('003') && p.id === 'demo-protein-contradiction') ||
+              (currentInspection.id.includes('004') && p.id === 'demo-bulk-carton')))
+      ) || null
+    );
+  }, [currentInspection]);
 
   if (!currentInspection) {
     return (
@@ -267,17 +294,27 @@ export const PDFReportViewer: React.FC = () => {
         {/* Section 2: Uploaded Proofs */}
         <div className="space-y-3">
           <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-1">
-            Section 2: Uploaded Photographic Evidence &amp; Optical Quality
+            Section 2: Uploaded Packaging Photographic Proofs &amp; Optical Quality
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
             {currentInspection.images.map((img) => (
-              <div key={img.id} className="p-2 border border-slate-200 rounded-xl bg-slate-50 space-y-1">
-                <div className="h-24 sm:h-28 bg-white rounded-lg flex items-center justify-center overflow-hidden border border-slate-200">
-                  <img src={img.url} alt={img.name} className="max-h-full max-w-full object-contain" />
+              <div key={img.id} className="p-2.5 border border-slate-200 rounded-xl bg-slate-50 space-y-1.5 shadow-2xs">
+                <div className="h-28 sm:h-32 bg-white rounded-lg flex items-center justify-center overflow-hidden border border-slate-200 p-1">
+                  <img
+                    src={normalizeImageUrl(img.url)}
+                    alt={img.name}
+                    className="max-h-full max-w-full object-contain"
+                  />
                 </div>
-                <div className="text-[10px] font-semibold text-slate-700 flex justify-between">
+                <div className="text-[11px] font-bold text-slate-800 flex items-center justify-between">
                   <span>{img.type} View</span>
-                  <span className="font-mono text-slate-500">{img.quality?.overall || 'GOOD'}</span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
+                    {img.quality?.overall || 'HD'}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono flex items-center justify-between pt-0.5 border-t border-slate-200/60">
+                  <span>{img.quality?.resolution || '1920x1080'}</span>
+                  <span>Contrast: {img.quality?.contrast || 'Good'}</span>
                 </div>
               </div>
             ))}
@@ -338,6 +375,60 @@ export const PDFReportViewer: React.FC = () => {
             </table>
           </div>
         </div>
+
+        {/* Section 3B: Predefined Statutory Benchmark Reference (When Predefined Demo Package Analyzed) */}
+        {matchedPreset && (
+          <div className="space-y-2 p-3.5 bg-blue-50/60 border border-blue-200 rounded-xl">
+            <div className="flex items-center justify-between border-b border-blue-200 pb-1.5">
+              <h3 className="text-xs font-black uppercase tracking-wider text-blue-950 flex items-center space-x-1.5">
+                <Database className="h-3.5 w-3.5 text-blue-700" />
+                <span>Section 3B: Predefined Statutory Benchmark Audit Matrix ({matchedPreset.title})</span>
+              </h3>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                Ground-Truth Benchmark
+              </span>
+            </div>
+            <p className="text-[11px] text-blue-800">
+              This commodity was screened against the Department of Consumer Affairs pre-verified ground-truth catalog.
+            </p>
+            <div className="overflow-x-auto border border-blue-200 rounded-lg bg-white">
+              <table className="w-full text-left text-xs min-w-[500px]">
+                <thead className="bg-blue-50 font-bold border-b border-blue-200 text-blue-950">
+                  <tr>
+                    <th className="p-2 border-r border-blue-200">Panel</th>
+                    <th className="p-2 border-r border-blue-200">Rule Citation</th>
+                    <th className="p-2 border-r border-blue-200">Mandatory Field</th>
+                    <th className="p-2 border-r border-blue-200">Predefined Statutory Text</th>
+                    <th className="p-2">Expected Outcome</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-blue-100 text-[11px]">
+                  {matchedPreset.predefinedFields.map((field, fIdx) => (
+                    <tr key={fIdx} className="hover:bg-blue-50/40">
+                      <td className="p-2 font-mono font-bold border-r border-blue-100 text-slate-700">{field.panel}</td>
+                      <td className="p-2 font-mono font-semibold border-r border-blue-100 text-blue-900">{field.ruleCitation}</td>
+                      <td className="p-2 font-bold border-r border-blue-100 text-slate-900">{field.label}</td>
+                      <td className="p-2 font-mono border-r border-blue-100 text-slate-800 max-w-[160px] truncate">{field.value}</td>
+                      <td className="p-2 font-mono font-bold">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] ${
+                            field.status === 'PASS'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : field.status === 'FAIL'
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {field.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* Section 4: Cross-Panel & Readability Findings */}
         <div className="space-y-3">

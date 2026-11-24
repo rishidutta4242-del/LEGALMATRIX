@@ -64,16 +64,6 @@ export const LoginView: React.FC = () => {
       phone: '+91 98450 12345'
     },
     {
-      id: 'USR-ADMIN-01',
-      email: 'admin@legalmetrix.gov.in',
-      name: 'Chief Administrator S. Ramaswamy',
-      role: 'Administrator',
-      badge_number: 'LM-ADMIN-01',
-      jurisdiction: 'Central Rule Codification & Technical Wing',
-      division: 'Statutory Rules Codification Authority',
-      phone: '+91 98765 43210'
-    },
-    {
       id: 'USR-DEP-01',
       email: 'deputy.controller@legalmetrix.gov.in',
       name: 'Deputy Controller Priya Sharma',
@@ -92,6 +82,26 @@ export const LoginView: React.FC = () => {
       jurisdiction: 'Ministry of Consumer Affairs, New Delhi',
       division: 'National Metrology Directorate General',
       phone: '+91 99990 00001'
+    },
+    {
+      id: 'USR-ADMIN-01',
+      email: 'admin@legalmetrix.gov.in',
+      name: 'Chief Administrator S. Ramaswamy',
+      role: 'Administrator',
+      badge_number: 'LM-ADMIN-01',
+      jurisdiction: 'Central Rule Codification & Technical Wing',
+      division: 'Statutory Rules Codification Authority',
+      phone: '+91 98765 43210'
+    },
+    {
+      id: 'USR-CITIZEN-01',
+      email: 'citizen@legalmetrix.gov.in',
+      name: 'Ananya Deshmukh',
+      role: 'Citizen',
+      badge_number: 'CITIZEN-KA-991',
+      jurisdiction: 'National Consumer Vigilance',
+      division: 'Consumer Grievance & Public Vigilance Cell',
+      phone: '+91 98888 12345'
     }
   ];
 
@@ -473,7 +483,9 @@ export const LoginView: React.FC = () => {
                             ? 'bg-blue-950/80 border-blue-600 text-blue-300'
                             : isDG
                             ? 'bg-amber-950/80 border-amber-600 text-amber-300'
-                            : 'bg-purple-950/80 border-purple-600 text-purple-300';
+                            : isAdmin
+                            ? 'bg-purple-950/80 border-purple-600 text-purple-300'
+                            : 'bg-teal-950/80 border-teal-600 text-teal-300';
 
                           const clearanceSummary = isInspector
                             ? 'Field surveillance, packaging image capture, statutory certificate issuance, and penalty notices.'
@@ -481,15 +493,19 @@ export const LoginView: React.FC = () => {
                             ? 'National Rule Codification, Schedule II threshold editing, full system audit logs, and master jurisdiction config.'
                             : isDeputy
                             ? 'Appeals adjudication, manufacturer dispute resolution, and supervisory case review.'
-                            : 'National policy directives, executive appeals adjudication & certificate revocation.';
+                            : isDG
+                            ? 'National policy directives, executive appeals adjudication & certificate revocation.'
+                            : 'Consumer grievance intake, marketplace scanning, and citizen surveillance reporting.';
 
                           return (
-                            <div
+                            <button
                               key={officer.id}
+                              type="button"
+                              id={`btn-login-sso-${officer.id.toLowerCase()}`}
                               onClick={() => handleFastLogin(officer)}
-                              className="bg-slate-950/80 hover:bg-slate-900 border border-slate-800 hover:border-amber-400/80 rounded-xl p-4 transition-all cursor-pointer group shadow-sm hover:shadow-md flex flex-col justify-between"
+                              className="bg-slate-950/80 hover:bg-slate-900 border border-slate-800 hover:border-amber-400/80 rounded-xl p-4 transition-all cursor-pointer group shadow-sm hover:shadow-md flex flex-col justify-between text-left focus:outline-none focus:ring-2 focus:ring-amber-400"
                             >
-                              <div className="space-y-2.5">
+                              <div className="space-y-2.5 w-full">
                                 <div className="flex items-center justify-between">
                                   <span className={`px-2.5 py-0.5 rounded text-[11px] font-bold border ${roleBadgeColor}`}>
                                     {officer.role}
@@ -514,11 +530,11 @@ export const LoginView: React.FC = () => {
                                 </p>
                               </div>
 
-                              <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs font-bold text-amber-400 group-hover:text-amber-300">
+                              <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs font-bold text-amber-400 group-hover:text-amber-300 w-full">
                                 <span>Authenticate Official Session</span>
                                 <ArrowRight className="h-3.5 w-3.5 transform group-hover:translate-x-1 transition" />
                               </div>
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
@@ -528,6 +544,33 @@ export const LoginView: React.FC = () => {
                   {/* Sub-tab 2: Departmental Credentials Form */}
                   {officerAuthMode === 'CREDENTIALS' && (
                     <form onSubmit={handleCredentialsSubmit} className="space-y-5 max-w-md mx-auto">
+                      {/* 1-Click Fast Credential Fill */}
+                      <div className="bg-slate-950/80 p-3 rounded-xl border border-slate-800 space-y-1.5">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                          1-Click Official Account Select:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {demoOfficers.map((off) => (
+                            <button
+                              key={off.id}
+                              type="button"
+                              id={`btn-fill-cred-${off.id.toLowerCase()}`}
+                              onClick={() => {
+                                setEmail(off.email);
+                                setPassword('Password@123');
+                              }}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                                email === off.email
+                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 ring-1 ring-amber-400/40'
+                                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
+                              }`}
+                            >
+                              {off.role}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       <div className="space-y-4">
                         <div>
                           <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">

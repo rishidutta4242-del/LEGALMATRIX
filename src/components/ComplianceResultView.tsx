@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { verifyInspection, updateDisputeStatus, generateCertificate, fetchCertificates, revokeCertificate } from '../services/api';
 import { ComplianceCertificate } from '../types/index';
@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   AlertTriangle,
+  AlertOctagon,
   Eye,
   FileText,
   UserCheck,
@@ -28,14 +29,39 @@ import {
   MessageSquare,
   MapPin,
   Languages,
-  Award
+  Award,
+  Database,
+  ImageIcon
 } from 'lucide-react';
+import { normalizeImageUrl } from '../utils/imageUtils';
+import { PREDEFINED_DEMO_PACKAGES } from '../data/demoPackages';
 
 export const ComplianceResultView: React.FC = () => {
   const { currentInspection, setCurrentInspection, setActiveView, setSelectedEvidenceField, officerName, officerRole, showToast } = useApp();
   const [showOverrideModal, setShowOverrideModal] = useState<boolean>(false);
   const [overrideRemarks, setOverrideRemarks] = useState<string>('');
   const [overrideStatus, setOverrideStatus] = useState<'PASS' | 'FAIL' | 'REVIEW'>('PASS');
+
+  const matchedPreset = useMemo(() => {
+    if (!currentInspection) return null;
+    return (
+      PREDEFINED_DEMO_PACKAGES.find(
+        (p) =>
+          (p.barcode && currentInspection.barcode && p.barcode === currentInspection.barcode) ||
+          (p.productName &&
+            currentInspection.product_name &&
+            p.productName.toLowerCase().trim() === currentInspection.product_name.toLowerCase().trim()) ||
+          (currentInspection.product_name &&
+            (p.productName.toLowerCase().includes(currentInspection.product_name.toLowerCase()) ||
+              currentInspection.product_name.toLowerCase().includes(p.productName.toLowerCase()))) ||
+          (currentInspection.id &&
+            ((currentInspection.id.includes('001') && p.id === 'demo-compliant-cookies') ||
+              (currentInspection.id.includes('002') && p.id === 'demo-violation-shampoo') ||
+              (currentInspection.id.includes('003') && p.id === 'demo-protein-contradiction') ||
+              (currentInspection.id.includes('004') && p.id === 'demo-bulk-carton')))
+      ) || null
+    );
+  }, [currentInspection]);
 
   // Certificate State
   const [existingCert, setExistingCert] = useState<ComplianceCertificate | null>(null);
@@ -290,7 +316,9 @@ export const ComplianceResultView: React.FC = () => {
             <p className="text-xs text-slate-700 leading-relaxed max-w-3xl">
               {currentInspection.status === 'NO_PACKAGE_DETECTED'
                 ? 'Real-time object detection scanned the captured frame(s) and determined that no physical packaged commodity or readable Legal Metrology packaging label is visible. Please capture a clear photo focusing directly on the product packaging label.'
-                : currentInspection.ai_notes || 'Rule engine evaluated declarations against the Legal Metrology (Packaged Commodities) Rules, 2011.'}
+                : currentInspection.status === 'FAIL'
+                ? currentInspection.plain_language_summary || currentInspection.ai_notes || 'Rule engine detected statutory non-compliance under Legal Metrology (Packaged Commodities) Rules, 2011.'
+                : currentInspection.ai_notes || currentInspection.plain_language_summary || 'Rule engine evaluated declarations against the Legal Metrology (Packaged Commodities) Rules, 2011.'}
             </p>
             {currentInspection.status === 'NO_PACKAGE_DETECTED' && (
               <div className="pt-3 flex flex-wrap items-center gap-2.5">
@@ -329,13 +357,39 @@ export const ComplianceResultView: React.FC = () => {
           <div className="w-24 bg-slate-100 h-2 rounded-full overflow-hidden mt-1.5">
             <div
               className={`h-full rounded-full ${
-                currentInspection.screening_score >= 80 ? 'bg-emerald-500' : currentInspection.screening_score >= 50 ? 'bg-amber-500' : 'bg-red-500'
+                currentInspection.status === 'FAIL'
+                  ? 'bg-rose-500'
+                  : currentInspection.screening_score >= 80
+                  ? 'bg-emerald-500'
+                  : currentInspection.screening_score >= 50
+                  ? 'bg-amber-500'
+                  : 'bg-red-500'
               }`}
               style={{ width: `${currentInspection.screening_score}%` }}
             ></div>
           </div>
+          {currentInspection.status === 'FAIL' && (
+            <span className="mt-1.5 text-[9px] font-bold uppercase tracking-wider text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+              Statutory Defect
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Zero Tolerance Statutory Guidance Callout (when FAIL) */}
+      {currentInspection.status === 'FAIL' && (
+        <div className="bg-rose-50/80 border border-rose-200 rounded-xl p-3.5 flex items-start space-x-3 text-xs text-rose-900 shadow-2xs">
+          <AlertOctagon className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-bold text-rose-950">
+              Why is this marked FAIL despite a {currentInspection.screening_score}/100 score?
+            </p>
+            <p className="text-rose-800 text-[11px] leading-relaxed">
+              Under <strong>Section 36 of the Legal Metrology Act, 2009</strong> and the <strong>Packaged Commodities Rules, 2011</strong>, statutory compliance is a strict-liability, zero-tolerance legal requirement. While the score ({currentInspection.screening_score}/100) reflects the proportion of standard declarations present, <strong>the absence or non-compliance of even a single mandatory statutory declaration</strong> (such as Batch / Lot Number or Consumer Care Cell) legally classifies the commodity as a non-standard package. A clean compliance certificate cannot be granted while a statutory violation exists.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Officer Determination Banner if overridden or verified */}
       {(currentInspection.officer_determination || currentInspection.verified_by) && (
@@ -431,6 +485,115 @@ export const ComplianceResultView: React.FC = () => {
         <span>
           <strong>Statutory Disclaimer:</strong> LEGALMETRIX provides AI-assisted compliance screening and decision support. Final legal determination under the Legal Metrology Act, 2009 remains with the authorized enforcement officer.
         </span>
+      </div>
+
+      {/* Uploaded Photographic Packaging Proofs & Evidence Panels */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 flex items-center space-x-2">
+              <ImageIcon className="h-4 w-4 text-blue-600" />
+              <span>Uploaded Packaging Proofs &amp; Optical Screening</span>
+            </h3>
+            <p className="text-xs text-slate-500">
+              High-resolution packaging panel evidence analyzed by LEGALMETRIX multimodal vision.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveView('evidence')}
+            className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center space-x-1 cursor-pointer self-start sm:self-auto"
+          >
+            <span>Open Interactive Evidence Canvas</span>
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {currentInspection.images.map((img, idx) => (
+            <div
+              key={img.id || idx}
+              className="p-2.5 rounded-xl border border-slate-200 bg-slate-50 space-y-2 group hover:border-blue-300 transition"
+            >
+              <div
+                onClick={() => setActiveView('evidence')}
+                className="h-28 sm:h-32 rounded-lg bg-white overflow-hidden flex items-center justify-center border border-slate-200 cursor-pointer p-1 group-hover:shadow-xs transition"
+              >
+                <img
+                  src={normalizeImageUrl(img.url)}
+                  alt={img.type}
+                  className="max-h-full max-w-full object-contain group-hover:scale-105 transition-transform"
+                />
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-800">{img.type} View</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-semibold">
+                  {img.quality?.overall || 'HD'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono pt-1 border-t border-slate-200/70">
+                <span>{img.quality?.resolution || '1920x1080'}</span>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('evidence')}
+                  className="text-blue-600 font-bold hover:underline cursor-pointer"
+                >
+                  Inspect →
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* If matched with Predefined Demo Package, display the statutory data fields benchmark preview */}
+        {matchedPreset && (
+          <div className="mt-3 p-3.5 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Database className="h-4 w-4 text-blue-700 shrink-0" />
+                <span className="text-xs font-bold text-blue-950">
+                  Predefined Statutory Ground-Truth Benchmark ({matchedPreset.title})
+                </span>
+              </div>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-blue-200 text-blue-900">
+                DoCA Catalog Data
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-1">
+              {matchedPreset.predefinedFields.map((field, fIdx) => (
+                <div
+                  key={fIdx}
+                  onClick={() => {
+                    setSelectedEvidenceField(field.field);
+                    setActiveView('evidence');
+                  }}
+                  className="p-2 bg-white rounded-lg border border-blue-100 text-xs flex items-center justify-between cursor-pointer hover:border-blue-300 transition shadow-2xs"
+                >
+                  <div className="truncate pr-2">
+                    <div className="flex items-center space-x-1">
+                      <span className="font-bold text-slate-900">{field.label}</span>
+                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-semibold">
+                        {field.panel}
+                      </span>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-600 truncate">{field.value}</div>
+                  </div>
+                  <span
+                    className={`text-[9px] font-bold font-mono px-1.5 py-0.5 rounded shrink-0 ${
+                      field.status === 'PASS'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : field.status === 'FAIL'
+                        ? 'bg-red-100 text-red-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    {field.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Field-Level Results Matrix Table */}

@@ -34,9 +34,23 @@ import {
   Link2,
   Loader2,
   Video,
-  Boxes
+  Boxes,
+  ChevronDown,
+  ChevronUp,
+  Database,
+  Filter,
+  Check,
+  CheckSquare,
+  FileSpreadsheet,
+  ExternalLink
 } from 'lucide-react';
 import { optimizePackagingImage } from '../utils/imageCompressor';
+import {
+  PREDEFINED_DEMO_PACKAGES,
+  DemoPackagePreset,
+  findDemoPackage
+} from '../data/demoPackages';
+import { normalizeImageUrl } from '../utils/imageUtils';
 
 const PRESET_SAMPLE_WHOLESALE_CARTON = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="650" height="700" viewBox="0 0 650 700">
   <rect width="650" height="700" fill="#d97706" rx="16"/>
@@ -168,6 +182,12 @@ export const NewInspectionView: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mobileCameraInputRef = useRef<HTMLInputElement>(null);
 
+  // Predefined Demo Datasets & Data Fields Catalog State
+  const [selectedPreset, setSelectedPreset] = useState<DemoPackagePreset | null>(null);
+  const [showPresetCatalog, setShowPresetCatalog] = useState<boolean>(true);
+  const [catalogFilter, setCatalogFilter] = useState<string>('ALL');
+  const [showFieldsPreview, setShowFieldsPreview] = useState<boolean>(false);
+
   // Reference Object Catalogue
   const referenceObjectsList = [
     { id: 'INR_5_COIN', label: '₹5 Coin (Standard Nickel-Brass)', dimension: 'Diameter: 23.0 mm', knownMm: 23.0 },
@@ -264,98 +284,46 @@ export const NewInspectionView: React.FC = () => {
     setImages((prev) => prev.map((img) => (img.id === id ? { ...img, type } : img)));
   };
 
-  const loadPresetDemo = (presetType: 'compliant' | 'violation' | 'contradiction' | 'bulk_carton') => {
+  const handleLoadDemoPackage = (pkg: DemoPackagePreset) => {
+    setSelectedPreset(pkg);
     setScanMode('STANDARD_MANUAL');
-    if (presetType === 'compliant') {
-      setPackageLevel('RETAIL_CONSUMER');
-      setProductName('Aura Organics Oats Cookies');
-      setBrand('Aura Organics Foods');
-      setCategory('Food');
-      setBarcode('8901234567890');
-      setCalibMethod('REFERENCE_OBJECT');
-      setSelectedRefObject('INR_5_COIN');
-      setImages([
-        {
-          id: 'img-demo-front',
-          type: 'Front',
-          name: 'aura_front_label.svg',
-          url: PRESET_SAMPLE_FRONT,
-          quality: { overall: 'GOOD', blurScore: 94, contrastScore: 90, brightnessScore: 88, resolution: '1920x1080', issues: [] }
-        },
-        {
-          id: 'img-demo-back',
-          type: 'Back',
-          name: 'aura_back_label.svg',
-          url: PRESET_SAMPLE_BACK,
-          quality: { overall: 'GOOD', blurScore: 95, contrastScore: 92, brightnessScore: 89, resolution: '1920x1080', issues: [] }
-        }
-      ]);
-      showToast('Loaded compliant oats cookie sample (Front & Back).', 'info');
-    } else if (presetType === 'violation') {
-      setPackageLevel('RETAIL_CONSUMER');
-      setProductName('Silk Glow Herbal Shampoo (Missing CC Violation)');
-      setBrand('Radiant Cosmetics');
-      setCategory('Cosmetics');
-      setBarcode('8909876543210');
-      setCalibMethod('NONE');
-      setImages([
-        {
-          id: 'img-demo-violation',
-          type: 'Back',
-          name: 'shampoo_violation_back.svg',
-          url: PRESET_SAMPLE_BACK,
-          quality: { overall: 'GOOD', blurScore: 90, contrastScore: 88, brightnessScore: 85, resolution: '1920x1080', issues: [] }
-        }
-      ]);
-      showToast('Loaded cosmetics sample with missing consumer care violation.', 'info');
-    } else if (presetType === 'bulk_carton') {
-      setPackageLevel('BULK_BOX');
-      setProductName('Aura Organics Oats Cookies (Wholesale Master Shipper Carton)');
-      setBrand('Aura Organics Foods');
-      setCategory('Food');
-      setBarcode('18901030998121');
-      setBulkUnitsCount(24);
-      setBulkUnitNetMass('100 g');
-      setBulkTotalGrossWeight('2.75 kg');
-      setBulkMasterBarcode('18901030998121');
-      setCalibMethod('DECLARED_DIMENSIONS');
-      setDeclaredDims({ width: 380, height: 420, depth: 250 });
-      setImages([
-        {
-          id: 'img-demo-bulk-carton',
-          type: 'Front',
-          name: 'wholesale_master_carton.svg',
-          url: PRESET_SAMPLE_WHOLESALE_CARTON,
-          quality: { overall: 'GOOD', blurScore: 96, contrastScore: 94, brightnessScore: 90, resolution: '1920x1080', issues: [] }
-        }
-      ]);
-      showToast('Loaded Chapter III compliant wholesale bulk box master carton sample!', 'success');
-    } else {
-      setPackageLevel('RETAIL_CONSUMER');
-      setProductName('Crunchy Protein Bites (Contradiction Test)');
-      setBrand('NutriFit Foods');
-      setCategory('Food');
-      setBarcode('8904561237895');
-      setCalibMethod('DECLARED_DIMENSIONS');
-      setImages([
-        {
-          id: 'img-demo-c-f',
-          type: 'Front',
-          name: 'protein_front_100g.svg',
-          url: PRESET_SAMPLE_FRONT,
-          quality: { overall: 'GOOD', blurScore: 90, contrastScore: 88, brightnessScore: 85, resolution: '1920x1080', issues: [] }
-        },
-        {
-          id: 'img-demo-c-b',
-          type: 'Back',
-          name: 'protein_back_80g.svg',
-          url: PRESET_SAMPLE_BACK,
-          quality: { overall: 'GOOD', blurScore: 90, contrastScore: 88, brightnessScore: 85, resolution: '1920x1080', issues: [] }
-        }
-      ]);
-      showToast('Loaded contradiction test sample (Front 100g vs Back 80g).', 'info');
+    setPackageLevel(pkg.packageLevel);
+    setProductName(pkg.productName);
+    setBrand(pkg.brand);
+    setCategory(pkg.category);
+    setBarcode(pkg.barcode);
+    setCalibMethod(pkg.calibMethod);
+    if (pkg.selectedRefObject) setSelectedRefObject(pkg.selectedRefObject);
+    if (pkg.declaredDims) setDeclaredDims(pkg.declaredDims);
+    if (pkg.bulkDetails) {
+      setBulkUnitsCount(pkg.bulkDetails.unitsCount);
+      setBulkUnitNetMass(pkg.bulkDetails.unitNetMass);
+      setBulkTotalGrossWeight(pkg.bulkDetails.totalGrossWeight);
+      setBulkMasterBarcode(pkg.bulkDetails.masterBarcode);
+    }
+    setImages(pkg.images);
+    setShowFieldsPreview(true);
+    showToast(`Loaded "${pkg.title}" with ${pkg.images.length} panel images & verified statutory declarations.`, 'success');
+  };
+
+  const loadPresetDemo = (presetType: 'compliant' | 'violation' | 'contradiction' | 'bulk_carton') => {
+    let targetId = 'demo-compliant-cookies';
+    if (presetType === 'violation') targetId = 'demo-violation-shampoo';
+    else if (presetType === 'bulk_carton') targetId = 'demo-bulk-carton';
+    else if (presetType === 'contradiction') targetId = 'demo-protein-contradiction';
+
+    const pkg = findDemoPackage(targetId);
+    if (pkg) {
+      handleLoadDemoPackage(pkg);
     }
   };
+
+  const filteredDemoPresets = useMemo(() => {
+    if (catalogFilter === 'ALL') return PREDEFINED_DEMO_PACKAGES;
+    if (catalogFilter === 'BULK') return PREDEFINED_DEMO_PACKAGES.filter((p) => p.packageLevel === 'BULK_BOX');
+    if (catalogFilter === 'VIOLATION') return PREDEFINED_DEMO_PACKAGES.filter((p) => p.expectedStatus === 'FAIL');
+    return PREDEFINED_DEMO_PACKAGES.filter((p) => p.category === catalogFilter);
+  }, [catalogFilter]);
 
   const handleFetchUrl = async (customUrl?: string) => {
     const targetUrl = customUrl || urlInput;
@@ -479,7 +447,7 @@ export const NewInspectionView: React.FC = () => {
         setPendingRecordId(recordId);
       }
 
-      // 3. Trigger AI multimodal analysis with 35s timeout
+      // 3. Trigger AI multimodal analysis with 75s timeout
       const analysisRes = await analyzeInspection(recordId, {
         images,
         package_level: packageLevel,
@@ -489,7 +457,7 @@ export const NewInspectionView: React.FC = () => {
           total_gross_weight: bulkTotalGrossWeight,
           master_shipper_barcode: bulkMasterBarcode
         } : undefined
-      }, 35000);
+      }, 75000);
 
       // 4. Navigate to results upon completion
       setTimeout(() => {
@@ -504,9 +472,12 @@ export const NewInspectionView: React.FC = () => {
             : 'Legal Metrology screening completed. Schedule II compliance evaluated.',
           'success'
         );
-      }, 1500);
+      }, 1200);
     } catch (err: any) {
-      setAnalysisError(err.message || 'Inspection analysis timed out or encountered an error.');
+      setIsAnalyzing(false);
+      const errMsg = err?.message || 'Inspection analysis timed out or encountered an error.';
+      setAnalysisError(errMsg);
+      showToast(errMsg, 'error');
     }
   };
 
@@ -535,8 +506,21 @@ export const NewInspectionView: React.FC = () => {
         </div>
 
         {/* Quick Sample Presets Loader */}
-        <div className="flex items-center space-x-2">
-          <span className="text-xs text-slate-500 font-medium hidden sm:inline">Load Sample Package:</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowPresetCatalog(!showPresetCatalog)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer border ${
+              showPresetCatalog
+                ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                : 'bg-white hover:bg-slate-100 text-blue-700 border-blue-200'
+            }`}
+          >
+            <Database className="h-3.5 w-3.5" />
+            <span>Predefined Demo Catalog ({PREDEFINED_DEMO_PACKAGES.length})</span>
+            {showPresetCatalog ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </button>
+
           <button
             type="button"
             onClick={() => loadPresetDemo('compliant')}
@@ -567,6 +551,191 @@ export const NewInspectionView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Predefined Demo Datasets & Data Fields Catalog */}
+      {showPresetCatalog && (
+        <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 rounded-2xl border border-slate-700 p-5 shadow-xl text-white space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-700">
+            <div className="space-y-0.5">
+              <div className="flex items-center space-x-2">
+                <Database className="h-4 w-4 text-blue-400" />
+                <h3 className="text-sm font-bold text-white">Predefined Demo Packaging Datasets &amp; Statutory Data Fields</h3>
+              </div>
+              <p className="text-xs text-slate-300">
+                Select any pre-configured Legal Metrology packaging sample to auto-populate high-resolution label images (Front, Back, Carton) and statutory Rule 6 data fields.
+              </p>
+            </div>
+
+            {/* Filter Pills */}
+            <div className="flex flex-wrap items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-700 text-xs">
+              {[
+                { id: 'ALL', label: 'All Samples' },
+                { id: 'Food', label: 'Food & Grains' },
+                { id: 'Cosmetics', label: 'Cosmetics' },
+                { id: 'BULK', label: '📦 Bulk Cartons' },
+                { id: 'VIOLATION', label: '🚨 Statutory Violations' }
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setCatalogFilter(tab.id)}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer text-[11px] ${
+                    catalogFilter === tab.id
+                      ? 'bg-blue-600 text-white shadow-xs font-bold'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cards Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 max-h-[360px] overflow-y-auto pr-1">
+            {filteredDemoPresets.map((pkg) => {
+              const isSelected = selectedPreset?.id === pkg.id;
+              const mainThumb = pkg.images[0]?.url || PRESET_SAMPLE_FRONT;
+
+              return (
+                <div
+                  key={pkg.id}
+                  className={`bg-slate-800/90 rounded-xl border p-3 flex flex-col justify-between space-y-2.5 transition group hover:border-blue-400 ${
+                    isSelected ? 'border-blue-500 ring-2 ring-blue-500/40 bg-slate-800' : 'border-slate-700'
+                  }`}
+                >
+                  {/* Image Preview & Badges */}
+                  <div className="relative h-28 bg-slate-950 rounded-lg overflow-hidden flex items-center justify-center p-1.5 border border-slate-700">
+                    <img
+                      src={normalizeImageUrl(mainThumb)}
+                      alt={pkg.title}
+                      className="max-h-full max-w-full object-contain rounded transition group-hover:scale-105 duration-200"
+                    />
+                    <div className="absolute top-1.5 left-1.5 flex flex-col gap-1">
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-900/90 text-slate-200 font-mono backdrop-blur-xs border border-slate-700">
+                        {pkg.category}
+                      </span>
+                    </div>
+                    <div className="absolute top-1.5 right-1.5">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border font-mono ${pkg.badgeClass}`}>
+                        {pkg.expectedStatus === 'PASS' ? '100% PASS' : pkg.expectedStatus === 'FAIL' ? 'VIOLATION' : 'REVIEW'}
+                      </span>
+                    </div>
+                    <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[9px] font-mono bg-slate-950/80 text-slate-300">
+                      {pkg.images.length} views
+                    </div>
+                  </div>
+
+                  {/* Details */}
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold text-white group-hover:text-blue-300 truncate" title={pkg.title}>
+                      {pkg.title}
+                    </h4>
+                    <p className="text-[11px] text-slate-300 line-clamp-2 leading-relaxed">
+                      {pkg.subtitle}
+                    </p>
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono pt-1">
+                      <span>GTIN: {pkg.barcode || 'N/A'}</span>
+                      <span className="text-emerald-400 font-semibold">{pkg.predefinedFields.length} Data Fields</span>
+                    </div>
+                  </div>
+
+                  {/* Load Button */}
+                  <button
+                    type="button"
+                    onClick={() => handleLoadDemoPackage(pkg)}
+                    className={`w-full py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center space-x-1.5 cursor-pointer ${
+                      isSelected
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'bg-slate-700 hover:bg-blue-600 text-slate-200 hover:text-white'
+                    }`}
+                  >
+                    <CheckCircle className="h-3.5 w-3.5" />
+                    <span>{isSelected ? 'Loaded in Workspace' : 'Load Package & Fields'}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Predefined Statutory Data Fields Preview Banner (When a demo package is active) */}
+      {selectedPreset && (
+        <div className="bg-white rounded-2xl border-2 border-blue-200 p-4 sm:p-5 shadow-sm space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100">
+            <div className="flex items-center space-x-2">
+              <span className="p-1 rounded bg-blue-100 text-blue-700">
+                <FileCheck className="h-4 w-4" />
+              </span>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900">
+                    Predefined Statutory Data Fields: <span className="text-blue-700">{selectedPreset.productName}</span>
+                  </h3>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${selectedPreset.badgeClass}`}>
+                    {selectedPreset.badgeLabel}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  {selectedPreset.images.length} panel views loaded • {selectedPreset.predefinedFields.length} statutory declarations ready for optical AI verification
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowFieldsPreview(!showFieldsPreview)}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-blue-700 hover:bg-blue-50 transition flex items-center space-x-1 cursor-pointer self-start sm:self-auto"
+            >
+              <span>{showFieldsPreview ? 'Hide Field Matrix' : 'View Field Matrix'}</span>
+              {showFieldsPreview ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </button>
+          </div>
+
+          {/* Predefined Fields Chips Matrix */}
+          {showFieldsPreview && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-1">
+              {selectedPreset.predefinedFields.map((f, fIdx) => (
+                <div
+                  key={fIdx}
+                  className={`p-2.5 rounded-xl border text-xs flex flex-col justify-between space-y-1.5 transition ${
+                    f.status === 'PASS'
+                      ? 'bg-emerald-50/50 border-emerald-200 text-emerald-950'
+                      : f.status === 'FAIL'
+                      ? 'bg-red-50/50 border-red-200 text-red-950'
+                      : 'bg-amber-50/50 border-amber-200 text-amber-950'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-bold text-slate-900 truncate">{f.label}</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/80 border border-slate-200 text-slate-600 font-semibold">
+                      {f.panel} Panel
+                    </span>
+                  </div>
+                  <div className="font-mono text-[11px] font-semibold text-slate-800 break-words">
+                    {f.value}
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-200/60 font-mono">
+                    <span>{f.ruleCitation}</span>
+                    <span
+                      className={`font-bold ${
+                        f.status === 'PASS'
+                          ? 'text-emerald-700'
+                          : f.status === 'FAIL'
+                          ? 'text-red-700'
+                          : 'text-amber-700'
+                      }`}
+                    >
+                      {f.status}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Column: Image Upload & Live Scanner & Image Gallery (7 cols) */}

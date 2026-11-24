@@ -4,6 +4,7 @@ interface NationalEmblemProps {
   className?: string;
   size?: number; // size in px, default 54
   showMinistryText?: boolean;
+  variant?: 'standard' | 'light' | 'gold' | 'monochrome';
 }
 
 /**
@@ -14,8 +15,25 @@ interface NationalEmblemProps {
 export const NationalEmblemIndia: React.FC<NationalEmblemProps> = ({
   className = '',
   size = 64,
-  showMinistryText = false
+  showMinistryText = false,
+  variant = 'standard'
 }) => {
+  // Color tokens based on variant
+  const isLightOrGold = variant === 'light' || variant === 'gold';
+  const isGold = variant === 'gold';
+
+  const lionHeadFill = isGold ? '#f59e0b' : isLightOrGold ? '#f1f5f9' : '#1e293b';
+  const lionSideFill = isGold ? '#d97706' : isLightOrGold ? '#cbd5e1' : '#334155';
+  const abacusBg = isGold ? '#b45309' : isLightOrGold ? '#1e293b' : '#1e293b';
+  const chakraBorder = isGold ? '#fbbf24' : '#38bdf8';
+  const chakraFill = isGold ? '#d97706' : '#0284c7';
+  const chakraLines = isLightOrGold ? '#ffffff' : '#f8fafc';
+  const pedestalFill = isGold ? '#b45309' : isLightOrGold ? '#475569' : '#334155';
+  const mottoColor = isGold ? '#fbbf24' : isLightOrGold ? '#f8fafc' : '#0f172a';
+  const subtextColor = isGold ? '#fde68a' : isLightOrGold ? '#94a3b8' : '#475569';
+  const facialDetail = isLightOrGold ? (isGold ? '#78350f' : '#0f172a') : '#f8fafc';
+  const facialPupil = isLightOrGold ? '#f8fafc' : '#0f172a';
+
   return (
     <div className={`flex flex-col items-center select-none ${className}`}>
       <svg
@@ -24,59 +42,59 @@ export const NationalEmblemIndia: React.FC<NationalEmblemProps> = ({
         viewBox="0 0 120 144"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        className="text-slate-900"
+        className="shrink-0"
       >
         {/* Ashoka Lion Capital - Central Lion Head & Mane */}
         <g id="central-lion">
           {/* Crown & Forehead */}
           <path
             d="M60 12 C55 12 51 15 50 19 C48 16 43 17 42 21 C41 26 44 29 46 32 C43 33 41 36 41 40 C41 44 44 48 48 50 C46 54 47 58 50 61 C53 64 57 65 60 65 C63 65 67 64 70 61 C73 58 74 54 72 50 C76 48 79 44 79 40 C79 36 77 33 74 32 C76 29 79 26 78 21 C77 17 72 16 70 19 C69 15 65 12 60 12 Z"
-            fill="#1e293b"
+            fill={lionHeadFill}
           />
           {/* Facial features - Eyes, Muzzle & Whiskers */}
-          <ellipse cx="54" cy="30" rx="2.5" ry="3.5" fill="#f8fafc" />
-          <circle cx="54.5" cy="30" r="1.5" fill="#0f172a" />
-          <ellipse cx="66" cy="30" rx="2.5" ry="3.5" fill="#f8fafc" />
-          <circle cx="65.5" cy="30" r="1.5" fill="#0f172a" />
+          <ellipse cx="54" cy="30" rx="2.5" ry="3.5" fill={facialDetail} />
+          <circle cx="54.5" cy="30" r="1.5" fill={facialPupil} />
+          <ellipse cx="66" cy="30" rx="2.5" ry="3.5" fill={facialDetail} />
+          <circle cx="65.5" cy="30" r="1.5" fill={facialPupil} />
           {/* Nose & Snout */}
-          <path d="M58 33 L62 33 L60 38 Z" fill="#f8fafc" />
-          <path d="M57 40 Q60 43 63 40" stroke="#f8fafc" strokeWidth="1.5" strokeLinecap="round" />
+          <path d="M58 33 L62 33 L60 38 Z" fill={facialDetail} />
+          <path d="M57 40 Q60 43 63 40" stroke={facialDetail} strokeWidth="1.5" strokeLinecap="round" />
           {/* Forehead tilak / brow definition */}
-          <path d="M60 16 L60 25" stroke="#f8fafc" strokeWidth="1.5" strokeLinecap="round" />
+          <path d="M60 16 L60 25" stroke={facialDetail} strokeWidth="1.5" strokeLinecap="round" />
         </g>
 
         {/* Left Flanking Lion (profile) */}
         <g id="left-lion">
           <path
             d="M40 24 C34 22 28 26 27 32 C26 38 29 44 32 48 C30 52 32 58 36 61 C39 63 43 63 46 60 C42 55 40 48 40 40 C40 34 41 28 40 24 Z"
-            fill="#334155"
+            fill={lionSideFill}
           />
-          <circle cx="31" cy="33" r="2" fill="#f8fafc" />
-          <circle cx="31" cy="33" r="1" fill="#0f172a" />
-          <path d="M26 38 Q30 40 33 37" stroke="#f8fafc" strokeWidth="1.2" />
+          <circle cx="31" cy="33" r="2" fill={facialDetail} />
+          <circle cx="31" cy="33" r="1" fill={facialPupil} />
+          <path d="M26 38 Q30 40 33 37" stroke={facialDetail} strokeWidth="1.2" />
         </g>
 
         {/* Right Flanking Lion (profile) */}
         <g id="right-lion">
           <path
             d="M80 24 C86 22 92 26 93 32 C94 38 91 44 88 48 C90 52 88 58 84 61 C81 63 77 63 74 60 C78 55 80 48 80 40 C80 34 79 28 80 24 Z"
-            fill="#334155"
+            fill={lionSideFill}
           />
-          <circle cx="89" cy="33" r="2" fill="#f8fafc" />
-          <circle cx="89" cy="33" r="1" fill="#0f172a" />
-          <path d="M94 38 Q90 40 87 37" stroke="#f8fafc" strokeWidth="1.2" />
+          <circle cx="89" cy="33" r="2" fill={facialDetail} />
+          <circle cx="89" cy="33" r="1" fill={facialPupil} />
+          <path d="M94 38 Q90 40 87 37" stroke={facialDetail} strokeWidth="1.2" />
         </g>
 
         {/* Abacus Frieze (Circular band beneath lions) */}
         <g id="abacus">
           {/* Main Abacus Block */}
-          <rect x="18" y="68" width="84" height="24" rx="3" fill="#1e293b" />
-          <rect x="20" y="70" width="80" height="20" rx="2" fill="#0f172a" stroke="#cbd5e1" strokeWidth="0.8" />
+          <rect x="18" y="68" width="84" height="24" rx="3" fill={abacusBg} />
+          <rect x="20" y="70" width="80" height="20" rx="2" fill={isLightOrGold ? "#0f172a" : "#0f172a"} stroke={isLightOrGold ? "#64748b" : "#cbd5e1"} strokeWidth="0.8" />
 
           {/* Central Ashoka Chakra in the Abacus */}
           <g id="abacus-chakra">
-            <circle cx="60" cy="80" r="8" stroke="#38bdf8" strokeWidth="1.2" fill="#0284c7" />
-            <circle cx="60" cy="80" r="2" fill="#f8fafc" />
+            <circle cx="60" cy="80" r="8" stroke={chakraBorder} strokeWidth="1.2" fill={chakraFill} />
+            <circle cx="60" cy="80" r="2" fill={chakraLines} />
             {/* 24 spokes (sample spokes) */}
             {[...Array(12)].map((_, i) => (
               <line
@@ -85,7 +103,7 @@ export const NationalEmblemIndia: React.FC<NationalEmblemProps> = ({
                 y1={80 + 2 * Math.sin((i * 30 * Math.PI) / 180)}
                 x2={60 + 7.5 * Math.cos((i * 30 * Math.PI) / 180)}
                 y2={80 + 7.5 * Math.sin((i * 30 * Math.PI) / 180)}
-                stroke="#f8fafc"
+                stroke={chakraLines}
                 strokeWidth="0.8"
               />
             ))}
@@ -95,20 +113,20 @@ export const NationalEmblemIndia: React.FC<NationalEmblemProps> = ({
           <g id="bull">
             <path
               d="M78 76 C80 73 83 73 85 75 C87 77 86 80 84 82 C82 84 80 84 78 82 Z"
-              fill="#e2e8f0"
+              fill={isLightOrGold ? "#cbd5e1" : "#e2e8f0"}
             />
-            <path d="M85 73 L87 70" stroke="#f8fafc" strokeWidth="1" />
-            <circle cx="83" cy="76" r="0.8" fill="#0f172a" />
+            <path d="M85 73 L87 70" stroke={chakraLines} strokeWidth="1" />
+            <circle cx="83" cy="76" r="0.8" fill={facialPupil} />
           </g>
 
           {/* Galloping Horse on Left of Abacus */}
           <g id="horse">
             <path
               d="M42 76 C40 73 37 73 35 75 C33 77 34 80 36 82 C38 84 40 84 42 82 Z"
-              fill="#e2e8f0"
+              fill={isLightOrGold ? "#cbd5e1" : "#e2e8f0"}
             />
-            <path d="M35 73 L33 70" stroke="#f8fafc" strokeWidth="1" />
-            <circle cx="37" cy="76" r="0.8" fill="#0f172a" />
+            <path d="M35 73 L33 70" stroke={chakraLines} strokeWidth="1" />
+            <circle cx="37" cy="76" r="0.8" fill={facialPupil} />
           </g>
         </g>
 
@@ -116,15 +134,15 @@ export const NationalEmblemIndia: React.FC<NationalEmblemProps> = ({
         <g id="lotus-pedestal">
           <path
             d="M26 95 C30 102 42 108 60 108 C78 108 90 102 94 95 L90 93 C76 99 44 99 30 93 Z"
-            fill="#334155"
+            fill={pedestalFill}
           />
           {/* Petal flutes */}
-          <path d="M40 95 C45 104 55 106 60 106 C65 106 75 104 80 95" stroke="#94a3b8" strokeWidth="1" fill="none" />
-          <line x1="48" y1="96" x2="49" y2="103" stroke="#94a3b8" strokeWidth="0.8" />
-          <line x1="60" y1="96" x2="60" y2="106" stroke="#94a3b8" strokeWidth="1" />
-          <line x1="72" y1="96" x2="71" y2="103" stroke="#94a3b8" strokeWidth="0.8" />
+          <path d="M40 95 C45 104 55 106 60 106 C65 106 75 104 80 95" stroke={isLightOrGold ? "#94a3b8" : "#94a3b8"} strokeWidth="1" fill="none" />
+          <line x1="48" y1="96" x2="49" y2="103" stroke={isLightOrGold ? "#94a3b8" : "#94a3b8"} strokeWidth="0.8" />
+          <line x1="60" y1="96" x2="60" y2="106" stroke={isLightOrGold ? "#94a3b8" : "#94a3b8"} strokeWidth="1" />
+          <line x1="72" y1="96" x2="71" y2="103" stroke={isLightOrGold ? "#94a3b8" : "#94a3b8"} strokeWidth="0.8" />
           {/* Plinth footer */}
-          <rect x="34" y="108" width="52" height="4" rx="1.5" fill="#1e293b" />
+          <rect x="34" y="108" width="52" height="4" rx="1.5" fill={abacusBg} />
         </g>
 
         {/* Motto: "सत्यमेव जयते" (Satyameva Jayate - Truth Alone Triumphs) */}
@@ -136,7 +154,7 @@ export const NationalEmblemIndia: React.FC<NationalEmblemProps> = ({
             fontFamily="'Noto Serif Devanagari', 'Mangal', 'Yashomudra', 'Georgia', serif"
             fontSize="11"
             fontWeight="bold"
-            fill="#0f172a"
+            fill={mottoColor}
             letterSpacing="0.8"
           >
             सत्यमेव जयते
@@ -148,7 +166,7 @@ export const NationalEmblemIndia: React.FC<NationalEmblemProps> = ({
             fontFamily="Arial, sans-serif"
             fontSize="7"
             fontWeight="600"
-            fill="#475569"
+            fill={subtextColor}
             letterSpacing="1.2"
           >
             GOVERNMENT OF INDIA

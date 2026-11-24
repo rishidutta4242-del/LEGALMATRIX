@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { verifyInspection } from '../services/api';
+import { verifyInspection, recalibrateFrontOcrApi } from '../services/api';
 import {
   ZoomIn,
   ZoomOut,
@@ -15,8 +15,136 @@ import {
   UserCheck,
   ShieldCheck,
   ShieldAlert,
-  Gavel
+  Gavel,
+  Database,
+  FileCheck,
+  Image as ImageIcon,
+  ChevronDown,
+  ChevronUp,
+  Sparkles,
+  Tag,
+  Hash,
+  Crosshair,
+  Info,
+  Eye
 } from 'lucide-react';
+import { normalizeImageUrl } from '../utils/imageUtils';
+import { PREDEFINED_DEMO_PACKAGES } from '../data/demoPackages';
+
+export function getShortFieldLabel(field: string, originalLabel: string): string {
+  const map: Record<string, string> = {
+    brand_name: 'Brand',
+    product_name: 'Commodity',
+    sub_brand: 'Sub-Brand',
+    net_quantity: 'Net Qty',
+    mrp: 'MRP',
+    unit_sale_price: 'Unit Price',
+    manufacturer_name: 'Manufacturer',
+    packer_name: 'Packer',
+    importer_name: 'Importer',
+    mfg_date: 'Pack/Mfg Date',
+    best_before: 'Best Before',
+    use_by: 'Use By',
+    consumer_care: 'Consumer Care',
+    consumer_care_phone: 'Care Phone',
+    consumer_care_email: 'Care Email',
+    country_of_origin: 'Origin',
+    batch_number: 'Batch No',
+    barcode: 'Barcode',
+    veg_non_veg: 'Veg Mark',
+    front_claims: 'Claims'
+  };
+  return map[field] || originalLabel.split(' ')[0] || field;
+}
+
+function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number; xmin: number; ymax: number; xmax: number } | null {
+  if (!raw) return null;
+
+  let ymin = 0;
+  let xmin = 0;
+  let ymax = 0;
+  let xmax = 0;
+
+  if (Array.isArray(raw)) {
+    if (raw.length >= 4) {
+      ymin = Number(raw[0]) || 0;
+      xmin = Number(raw[1]) || 0;
+      ymax = Number(raw[2]) || 0;
+      xmax = Number(raw[3]) || 0;
+
+      if (isExplicitBox2d) {
+        // Gemini box_2d is strictly 0..1000 integer scale
+        ymin = (ymin / 1000) * 100;
+        xmin = (xmin / 1000) * 100;
+        ymax = (ymax / 1000) * 100;
+        xmax = (xmax / 1000) * 100;
+      } else {
+        const maxVal = Math.max(ymin, xmin, ymax, xmax);
+        if (maxVal > 100) {
+          ymin = (ymin / 1000) * 100;
+          xmin = (xmin / 1000) * 100;
+          ymax = (ymax / 1000) * 100;
+          xmax = (xmax / 1000) * 100;
+        } else if (maxVal <= 1.0 && maxVal > 0) {
+          ymin = ymin * 100;
+          xmin = xmin * 100;
+          ymax = ymax * 100;
+          xmax = xmax * 100;
+        }
+      }
+    } else {
+      return null;
+    }
+  } else if (typeof raw === 'object') {
+    ymin = Number(raw.ymin ?? raw.top ?? raw.y ?? raw.y1 ?? 0);
+    xmin = Number(raw.xmin ?? raw.left ?? raw.x ?? raw.x1 ?? 0);
+    ymax = Number(raw.ymax ?? raw.bottom ?? (raw.y !== undefined && raw.height !== undefined ? raw.y + raw.height : 0) ?? raw.y2 ?? 0);
+    xmax = Number(raw.xmax ?? raw.right ?? (raw.x !== undefined && raw.width !== undefined ? raw.x + raw.width : 0) ?? raw.x2 ?? 0);
+
+    const maxVal = Math.max(ymin, xmin, ymax, xmax);
+    if (maxVal > 100) {
+      ymin = (ymin / 1000) * 100;
+      xmin = (xmin / 1000) * 100;
+      ymax = (ymax / 1000) * 100;
+      xmax = (xmax / 1000) * 100;
+    } else if (maxVal <= 1.0 && maxVal > 0) {
+      ymin = ymin * 100;
+      xmin = xmin * 100;
+      ymax = ymax * 100;
+      xmax = xmax * 100;
+    }
+  } else {
+    return null;
+  }
+
+  // Ensure min < max
+  if (ymin > ymax) {
+    const tmp = ymin;
+    ymin = ymax;
+    ymax = tmp;
+  }
+  if (xmin > xmax) {
+    const tmp = xmin;
+    xmin = xmax;
+    xmax = tmp;
+  }
+
+  // Round to 1 decimal place and clamp between 0 and 100
+  ymin = Math.max(0, Math.min(99, Math.round(ymin * 10) / 10));
+  xmin = Math.max(0, Math.min(99, Math.round(xmin * 10) / 10));
+  ymax = Math.max(ymin + 1, Math.min(100, Math.round(ymax * 10) / 10));
+  xmax = Math.max(xmin + 1, Math.min(100, Math.round(xmax * 10) / 10));
+
+  // If the box is completely collapsed, return null
+  if (ymax - ymin < 0.5 && xmax - xmin < 0.5) {
+    return null;
+  }
+  if (ymin >= 98 && xmin >= 98) {
+    return null;
+  }
+
+  return { ymin, xmin, ymax, xmax };
+}
 
 export const EvidenceViewer: React.FC = () => {
   const {
@@ -33,12 +161,39 @@ export const EvidenceViewer: React.FC = () => {
   const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [showBoundingBoxes, setShowBoundingBoxes] = useState<boolean>(true);
+  const [boxDisplayMode, setBoxDisplayMode] = useState<'tags' | 'pins' | 'reticles'>('tags');
+  const [hoveredBoxField, setHoveredBoxField] = useState<string | null>(null);
+  const [isRecalibrating, setIsRecalibrating] = useState<boolean>(false);
   const [officerNote, setOfficerNote] = useState<string>('');
+  const [showPredefinedBenchmark, setShowPredefinedBenchmark] = useState<boolean>(true);
+  const [imageLayer, setImageLayer] = useState<'original' | 'enhanced' | 'threshold'>('original');
+  const [isPreprocessing, setIsPreprocessing] = useState<boolean>(false);
 
   // Overall Override Modal State
   const [showOverrideModal, setShowOverrideModal] = useState<boolean>(false);
   const [overrideStatus, setOverrideStatus] = useState<'PASS' | 'FAIL' | 'REVIEW'>('PASS');
   const [overrideRemarks, setOverrideRemarks] = useState<string>('');
+
+  const matchedPreset = useMemo(() => {
+    if (!currentInspection) return null;
+    return (
+      PREDEFINED_DEMO_PACKAGES.find(
+        (p) =>
+          (p.barcode && currentInspection.barcode && p.barcode === currentInspection.barcode) ||
+          (p.productName &&
+            currentInspection.product_name &&
+            p.productName.toLowerCase().trim() === currentInspection.product_name.toLowerCase().trim()) ||
+          (currentInspection.product_name &&
+            (p.productName.toLowerCase().includes(currentInspection.product_name.toLowerCase()) ||
+              currentInspection.product_name.toLowerCase().includes(p.productName.toLowerCase()))) ||
+          (currentInspection.id &&
+            ((currentInspection.id.includes('001') && p.id === 'demo-compliant-cookies') ||
+              (currentInspection.id.includes('002') && p.id === 'demo-violation-shampoo') ||
+              (currentInspection.id.includes('003') && p.id === 'demo-protein-contradiction') ||
+              (currentInspection.id.includes('004') && p.id === 'demo-bulk-carton')))
+      ) || null
+    );
+  }, [currentInspection]);
 
   if (!currentInspection || !currentInspection.images || currentInspection.images.length === 0) {
     return (
@@ -72,10 +227,248 @@ export const EvidenceViewer: React.FC = () => {
     currentInspection.is_package_detected === false ||
     activeImage?.quality?.issues?.some((issue) => issue.toLowerCase().includes('no statutory package') || issue.toLowerCase().includes('no package'));
 
-  // Filter declarations for this active image
-  const declarationsOnImage = currentInspection.declarations.filter(
-    (d) => d.image_id === activeImage.id || d.image_type === activeImage.type || !d.image_id
-  );
+  // Auto switch active image when a user selects a declaration in the side list
+  useEffect(() => {
+    if (!selectedEvidenceField || !currentInspection?.images?.length) return;
+    const decl = currentInspection.declarations?.find((d) => d.field === selectedEvidenceField);
+    if (!decl) return;
+
+    let targetIdx = -1;
+    if (decl.image_id) {
+      targetIdx = currentInspection.images.findIndex((img) => img.id === decl.image_id);
+    }
+    if (targetIdx === -1 && decl.image_type) {
+      targetIdx = currentInspection.images.findIndex(
+        (img) => img.type?.trim().toLowerCase() === decl.image_type?.trim().toLowerCase()
+      );
+    }
+    if (targetIdx === -1 && currentInspection.images.length > 1) {
+      const isBackField = [
+        'manufacturer_name',
+        'packer_name',
+        'importer_name',
+        'consumer_care',
+        'consumer_care_phone',
+        'consumer_care_email',
+        'barcode',
+        'batch_number',
+        'best_before',
+        'use_by',
+        'fssai_license',
+      ].includes(decl.field);
+      if (isBackField) {
+        targetIdx = currentInspection.images.findIndex((img) => img.type?.toLowerCase() === 'back');
+      } else {
+        targetIdx = currentInspection.images.findIndex((img) => img.type?.toLowerCase() === 'front');
+      }
+    }
+    if (targetIdx !== -1 && targetIdx !== activeImageIndex) {
+      setActiveImageIndex(targetIdx);
+    }
+  }, [selectedEvidenceField, currentInspection?.declarations, currentInspection?.images]);
+
+  // Filter declarations for this active image strictly to prevent cross-image hallucination
+  const declarationsOnImage = useMemo(() => {
+    if (!currentInspection?.declarations) return [];
+    const isCurrentFront = activeImage.type?.toLowerCase() === 'front' || activeImageIndex === 0;
+
+    const strictBackFields = [
+      'manufacturer_name',
+      'packer_name',
+      'importer_name',
+      'consumer_care',
+      'consumer_care_phone',
+      'consumer_care_email',
+      'barcode',
+      'batch_number',
+      'best_before',
+      'use_by',
+      'fssai_license',
+      'mrp',
+      'unit_sale_price',
+      'country_of_origin',
+      'mfg_date'
+    ];
+
+    const strictFrontFields = ['sub_brand', 'front_claims', 'veg_non_veg'];
+
+    return currentInspection.declarations.filter((d) => {
+      // If explicit image_id matches
+      if (d.image_id && activeImage.id) {
+        if (d.image_id === activeImage.id) return true;
+        // If image_id belongs to another image, do not display
+        if (currentInspection.images.some((img) => img.id === d.image_id && img.id !== activeImage.id)) {
+          return false;
+        }
+      }
+
+      // If explicit image_type matches
+      if (d.image_type && activeImage.type) {
+        const dType = d.image_type.trim().toLowerCase();
+        const aType = activeImage.type.trim().toLowerCase();
+        if (dType === aType) return true;
+        if (dType !== aType && ['front', 'back'].includes(dType) && ['front', 'back'].includes(aType)) {
+          return false;
+        }
+      }
+
+      // Single image inspection fallback
+      if (currentInspection.images.length === 1) {
+        return true;
+      }
+
+      // Panel partition enforcement
+      if (isCurrentFront) {
+        return !strictBackFields.includes(d.field);
+      } else {
+        return !strictFrontFields.includes(d.field);
+      }
+    });
+  }, [currentInspection?.declarations, currentInspection?.images, activeImage, activeImageIndex]);
+
+  // Anti-collision layout solver for bounding boxes and labels
+  const layoutBoxes = useMemo(() => {
+    if (!showBoundingBoxes || isNoPackageDetected || !declarationsOnImage) return [];
+
+    const valid = declarationsOnImage.filter((decl) => {
+      const rawBox = decl.bbox || (decl as any).box_2d;
+      return rawBox && decl.status !== 'NOT_FOUND' && decl.found !== false;
+    });
+
+    const mapped = valid
+      .map((decl, idx) => {
+        const rawBox = decl.bbox || (decl as any).box_2d;
+        const isBox2d = Array.isArray((decl as any).box_2d) || Array.isArray(decl.bbox);
+        const bbox = normalizeBbox(rawBox, isBox2d);
+        if (!bbox) return null;
+
+        const evalItem = currentInspection?.rule_evaluations?.find((r) => r.field === decl.field);
+        const status: 'PASS' | 'FAIL' | 'REVIEW' =
+          (evalItem?.status as any) || (decl.status === 'FOUND' ? 'PASS' : 'FAIL');
+
+        const top = Math.max(0, Math.min(96, bbox.ymin));
+        const left = Math.max(0, Math.min(96, bbox.xmin));
+        const width = Math.max(3.5, Math.min(100 - left, bbox.xmax - bbox.xmin));
+        const height = Math.max(2.2, Math.min(100 - top, bbox.ymax - bbox.ymin));
+
+        return {
+          decl,
+          id: decl.id || `box-${idx}`,
+          field: decl.field,
+          label: decl.label,
+          shortLabel: getShortFieldLabel(decl.field, decl.label),
+          confidence: decl.confidence,
+          original_text: decl.original_text,
+          normalized_value: decl.normalized_value,
+          ruleCitation: evalItem?.rule_id || 'Rule 6(1)',
+          ruleTitle: evalItem?.title || decl.label,
+          status,
+          top,
+          left,
+          width,
+          height,
+          bottom: top + height,
+          right: left + width
+        };
+      })
+      .filter(Boolean) as any[];
+
+    // Sort strictly from top-to-bottom for pin numbering & collision solving
+    mapped.sort((a, b) => a.top - b.top || a.left - b.left);
+
+    // Solve collision and micro-tag placement
+    return mapped.map((box, idx) => {
+      const pinNumber = idx + 1;
+      const fitsInside = box.height >= 4.2 && box.width >= 12;
+      const prevBox = idx > 0 ? mapped[idx - 1] : null;
+
+      let placement: 'inside' | 'top' | 'bottom' = 'inside';
+      if (fitsInside) {
+        placement = 'inside';
+      } else if (box.top < 4.0 || (prevBox && Math.abs(box.top - prevBox.bottom) < 2.0)) {
+        placement = 'bottom';
+      } else {
+        placement = 'top';
+      }
+
+      // Horizontal edge alignment
+      const isRightAligned = box.left > 65;
+
+      return {
+        ...box,
+        pinNumber,
+        placement,
+        isRightAligned
+      };
+    });
+  }, [declarationsOnImage, showBoundingBoxes, isNoPackageDetected, currentInspection?.rule_evaluations]);
+
+  const handleRecalibrateFront = async () => {
+    if (!currentInspection) return;
+    setIsRecalibrating(true);
+    try {
+      const res = await recalibrateFrontOcrApi(currentInspection.id, officerName);
+      if (res.success && res.inspection) {
+        setCurrentInspection(res.inspection);
+        showToast('Front Panel OCR recalibrated with precision bounding boxes!', 'success');
+        const frontIdx = res.inspection.images.findIndex((img) => img.type?.toLowerCase() === 'front');
+        if (frontIdx >= 0) setActiveImageIndex(frontIdx);
+      }
+    } catch (err: any) {
+      console.error('Recalibration error:', err);
+      showToast(err.message || 'Failed to recalibrate Front OCR', 'error');
+    } finally {
+      setIsRecalibrating(false);
+    }
+  };
+
+  const handleRunOcrPreprocessing = async () => {
+    if (!activeImage?.url) return;
+    setIsPreprocessing(true);
+    try {
+      const res = await fetch('/api/images/preprocess', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_url: activeImage.url, name: activeImage.name })
+      });
+      const data = await res.json();
+      if (data.success) {
+        const updatedImages = currentInspection.images.map((img, idx) => {
+          if (idx === activeImageIndex) {
+            return {
+              ...img,
+              preprocessed_url: data.data.preprocessed_url,
+              thresholded_url: data.data.thresholded_url,
+              preprocessing_steps: data.data.steps
+            };
+          }
+          return img;
+        });
+        setCurrentInspection({
+          ...currentInspection,
+          images: updatedImages
+        });
+        setImageLayer('enhanced');
+        showToast('Sharp OCR Preprocessing Complete: Grayscale + Dynamic Contrast + Otsu Thresholding Applied', 'success');
+      } else {
+        showToast(data.error || 'Preprocessing failed', 'error');
+      }
+    } catch (err: any) {
+      showToast('Failed to execute backend image preprocessing: ' + err.message, 'error');
+    } finally {
+      setIsPreprocessing(false);
+    }
+  };
+
+  const displayedImageUrl = useMemo(() => {
+    if (imageLayer === 'enhanced' && activeImage.preprocessed_url) {
+      return activeImage.preprocessed_url;
+    }
+    if (imageLayer === 'threshold' && activeImage.thresholded_url) {
+      return activeImage.thresholded_url;
+    }
+    return normalizeImageUrl(activeImage.url);
+  }, [imageLayer, activeImage]);
 
   const selectedDeclaration = currentInspection.declarations.find(
     (d) => d.field === selectedEvidenceField
@@ -155,19 +548,28 @@ export const EvidenceViewer: React.FC = () => {
         </div>
 
         {/* View Switcher Tabs (Front / Back / Side) */}
-        <div className="flex items-center space-x-2 bg-slate-100 p-1 rounded-xl border border-slate-200">
+        <div className="flex flex-wrap items-center gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
           {currentInspection.images.map((img, idx) => (
             <button
               key={img.id || idx}
               onClick={() => setActiveImageIndex(idx)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-2 cursor-pointer ${
                 activeImageIndex === idx
-                  ? 'bg-white text-blue-700 shadow-xs border border-slate-200'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white text-blue-700 shadow-xs border border-slate-200 ring-1 ring-blue-200'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
               }`}
             >
-              <Layers className="h-3.5 w-3.5" />
+              <div className="h-5 w-5 rounded bg-slate-200 overflow-hidden flex items-center justify-center border border-slate-300 shrink-0">
+                <img
+                  src={normalizeImageUrl(img.url)}
+                  alt={img.type}
+                  className="max-h-full max-w-full object-contain"
+                />
+              </div>
               <span>{img.type} View</span>
+              <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-100 text-slate-500">
+                {img.quality?.overall || 'HD'}
+              </span>
             </button>
           ))}
         </div>
@@ -264,43 +666,167 @@ export const EvidenceViewer: React.FC = () => {
               </span>
             </div>
 
-            <div className="flex items-center space-x-1">
-              <button
-                onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}
-                disabled={isNoPackageDetected}
-                className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                  isNoPackageDetected
-                    ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500'
-                    : showBoundingBoxes
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                }`}
-              >
-                Bounding Boxes {showBoundingBoxes && !isNoPackageDetected ? 'ON' : 'OFF'}
-              </button>
+            <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+              {/* Sharp OCR Preprocessing Layer Selector */}
+              <div className="inline-flex items-center bg-slate-900 border border-slate-700/80 rounded-md p-0.5 text-xs mr-1 shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setImageLayer('original')}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition cursor-pointer ${
+                    imageLayer === 'original' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Original full-color RGB packaging panel"
+                >
+                  RGB Color
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!activeImage.preprocessed_url) {
+                      await handleRunOcrPreprocessing();
+                    } else {
+                      setImageLayer('enhanced');
+                    }
+                  }}
+                  disabled={isPreprocessing}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition flex items-center space-x-1 cursor-pointer ${
+                    imageLayer === 'enhanced' ? 'bg-amber-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Sharp OCR Enhanced: Grayscale (BT.709) + Normalized Contrast + Unsharp Mask"
+                >
+                  <span>Enhanced (Sharp)</span>
+                  {isPreprocessing && <span className="animate-spin text-[10px]">↻</span>}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!activeImage.thresholded_url) {
+                      await handleRunOcrPreprocessing();
+                    }
+                    setImageLayer('threshold');
+                  }}
+                  disabled={isPreprocessing}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition cursor-pointer ${
+                    imageLayer === 'threshold' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Sharp Otsu-Binarized: High-contrast monochrome text isolation"
+                >
+                  Binarized
+                </button>
+              </div>
+
+              {(activeImage.type?.toLowerCase() === 'front' || activeImageIndex === 0) && (
+                <button
+                  type="button"
+                  onClick={handleRecalibrateFront}
+                  disabled={isRecalibrating || isNoPackageDetected}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer ${
+                    isRecalibrating
+                      ? 'bg-indigo-900 text-indigo-200 cursor-wait'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs'
+                  }`}
+                  title="Run specialized high-precision OCR recalibration on Front Principal Display Panel (PDP)"
+                >
+                  <Sparkles className={`h-3.5 w-3.5 ${isRecalibrating ? 'animate-spin' : 'text-indigo-200'}`} />
+                  <span>{isRecalibrating ? 'Calibrating...' : 'Recalibrate Front OCR'}</span>
+                </button>
+              )}
+              <div className="flex items-center space-x-1">
+                <button
+                  onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}
+                  disabled={isNoPackageDetected}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition cursor-pointer flex items-center space-x-1.5 ${
+                    isNoPackageDetected
+                      ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500'
+                      : showBoundingBoxes
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>Boxes {showBoundingBoxes && !isNoPackageDetected ? 'ON' : 'OFF'}</span>
+                </button>
+
+                {showBoundingBoxes && !isNoPackageDetected && (
+                  <div className="flex items-center bg-slate-900 border border-slate-700/80 rounded p-0.5 space-x-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setBoxDisplayMode('tags')}
+                      className={`px-2 py-0.5 rounded text-[11px] font-semibold transition flex items-center space-x-1 cursor-pointer ${
+                        boxDisplayMode === 'tags'
+                          ? 'bg-blue-600 text-white shadow-2xs'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Standard Mode: Smart micro-labels with anti-overlap placement"
+                    >
+                      <Tag className="h-3 w-3" />
+                      <span>Tags</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBoxDisplayMode('pins')}
+                      className={`px-2 py-0.5 rounded text-[11px] font-semibold transition flex items-center space-x-1 cursor-pointer ${
+                        boxDisplayMode === 'pins'
+                          ? 'bg-blue-600 text-white shadow-2xs'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Numbered Pins Mode: Ultra-clean 100% zero-overlap circular markers"
+                    >
+                      <Hash className="h-3 w-3" />
+                      <span>Pins</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBoxDisplayMode('reticles')}
+                      className={`px-2 py-0.5 rounded text-[11px] font-semibold transition flex items-center space-x-1 cursor-pointer ${
+                        boxDisplayMode === 'reticles'
+                          ? 'bg-blue-600 text-white shadow-2xs'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="Focus Reticle Mode: CAD corner brackets, shows details on hover"
+                    >
+                      <Crosshair className="h-3 w-3" />
+                      <span>Focus</span>
+                    </button>
+                  </div>
+                )}
+              </div>
               <button
                 onClick={zoomOut}
-                className="p-1.5 rounded hover:bg-slate-800 text-slate-300"
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 cursor-pointer"
                 title="Zoom Out"
               >
                 <ZoomOut className="h-4 w-4" />
               </button>
               <button
                 onClick={zoomIn}
-                className="p-1.5 rounded hover:bg-slate-800 text-slate-300"
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 cursor-pointer"
                 title="Zoom In"
               >
                 <ZoomIn className="h-4 w-4" />
               </button>
               <button
                 onClick={resetZoom}
-                className="p-1.5 rounded hover:bg-slate-800 text-slate-300"
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 cursor-pointer"
                 title="Reset Zoom"
               >
                 <RotateCcw className="h-4 w-4" />
               </button>
             </div>
           </div>
+
+          {/* Optional Pipeline Badge Bar */}
+          {imageLayer !== 'original' && (
+            <div className="px-3 py-1 bg-amber-950/70 border-b border-amber-800/60 text-amber-200 text-[11px] flex items-center justify-between">
+              <span className="font-mono flex items-center space-x-1.5">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>
+                  Backend Sharp Pipeline Active: {imageLayer === 'enhanced' ? 'Grayscale (BT.709) + Linear Contrast Boost (1.15) + Unsharp Mask' : 'Otsu Dynamic Thresholding (Binarized)'}
+                </span>
+              </span>
+              <span className="text-[10px] text-amber-300/80">Gemini Multimodal Optical Enhancement</span>
+            </div>
+          )}
 
           {/* Interactive Image Viewport */}
           <div className="flex-1 overflow-auto flex items-center justify-center p-4 min-h-[460px] relative">
@@ -309,62 +835,222 @@ export const EvidenceViewer: React.FC = () => {
               style={{ transform: `scale(${zoomLevel})` }}
             >
               <img
-                src={activeImage.url}
+                src={displayedImageUrl}
                 alt={activeImage.name}
                 className="max-h-[500px] w-auto object-contain rounded-lg shadow-2xl border border-slate-700 block"
               />
 
-              {/* Bounding Boxes Overlay: Only render valid detected bounding boxes */}
+              {/* Bounding Boxes Overlay: Render precision calibrated boxes */}
               {showBoundingBoxes &&
                 !isNoPackageDetected &&
-                declarationsOnImage.map((decl, idx) => {
-                  // If declaration was not found or has no bbox, do NOT draw a fake full-width box!
-                  if (!decl.bbox || decl.status === 'NOT_FOUND' || decl.found === false) {
-                    return null;
-                  }
-
-                  const evalItem = currentInspection.rule_evaluations.find((r) => r.field === decl.field);
-                  const isSelected = selectedDeclaration?.field === decl.field;
-                  const status = evalItem?.status || (decl.status === 'FOUND' ? 'PASS' : 'FAIL');
-
-                  const bbox = decl.bbox;
-                  const top = Math.max(0, Math.min(99, bbox.ymin));
-                  const left = Math.max(0, Math.min(99, bbox.xmin));
-                  const width = Math.max(2, Math.min(100 - left, bbox.xmax - bbox.xmin));
-                  const height = Math.max(2, Math.min(100 - top, bbox.ymax - bbox.ymin));
+                layoutBoxes.map((box) => {
+                  const isSelected = selectedDeclaration?.field === box.field;
+                  const isHovered = hoveredBoxField === box.field;
 
                   const borderColor =
-                    status === 'PASS'
-                      ? 'border-emerald-400 bg-emerald-500/20'
-                      : status === 'FAIL'
-                      ? 'border-red-400 bg-red-500/25'
-                      : 'border-amber-400 bg-amber-500/25';
+                    box.status === 'PASS'
+                      ? 'border-emerald-400 bg-emerald-500/10'
+                      : box.status === 'FAIL'
+                      ? 'border-rose-400 bg-rose-500/15'
+                      : 'border-amber-400 bg-amber-500/15';
 
                   const badgeColor =
-                    status === 'PASS' ? 'bg-emerald-600 text-white' : status === 'FAIL' ? 'bg-red-600 text-white' : 'bg-amber-600 text-white';
+                    box.status === 'PASS'
+                      ? 'bg-emerald-600 text-white border border-emerald-400/50'
+                      : box.status === 'FAIL'
+                      ? 'bg-rose-600 text-white border border-rose-400/50'
+                      : 'bg-amber-600 text-white border border-amber-400/50';
 
                   return (
                     <div
-                      key={decl.id || idx}
-                      onClick={() => setSelectedEvidenceField(decl.field)}
-                      className={`absolute cursor-pointer rounded border-2 transition-all group ${borderColor} ${
-                        isSelected ? 'ring-4 ring-blue-400 z-20 scale-102' : 'hover:opacity-90'
+                      key={box.id}
+                      onClick={() => setSelectedEvidenceField(box.field)}
+                      onMouseEnter={() => setHoveredBoxField(box.field)}
+                      onMouseLeave={() => setHoveredBoxField(null)}
+                      className={`absolute cursor-pointer rounded transition-all duration-150 group ${borderColor} ${
+                        isSelected
+                          ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-slate-950 z-30 scale-[1.01] border-2 shadow-lg'
+                          : isHovered
+                          ? 'ring-2 ring-cyan-300 z-20 border-2 shadow-md'
+                          : 'border-[1.5px] hover:border-2'
                       }`}
                       style={{
-                        top: `${top}%`,
-                        left: `${left}%`,
-                        width: `${width}%`,
-                        height: `${height}%`,
+                        top: `${box.top}%`,
+                        left: `${box.left}%`,
+                        width: `${box.width}%`,
+                        height: `${box.height}%`,
                       }}
                     >
-                      <span
-                        className={`absolute -top-5 left-0 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold shadow-md whitespace-nowrap ${badgeColor}`}
-                      >
-                        {decl.label}: {Math.round(decl.confidence * 100)}%
-                      </span>
+                      {/* CAD Corner Ticks for high-precision technical feel */}
+                      <div className="absolute -top-0.5 -left-0.5 w-1.5 h-1.5 border-t-2 border-l-2 border-white/90 pointer-events-none" />
+                      <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 border-t-2 border-r-2 border-white/90 pointer-events-none" />
+                      <div className="absolute -bottom-0.5 -left-0.5 w-1.5 h-1.5 border-b-2 border-l-2 border-white/90 pointer-events-none" />
+                      <div className="absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 border-b-2 border-r-2 border-white/90 pointer-events-none" />
+
+                      {/* Mode: TAGS */}
+                      {boxDisplayMode === 'tags' && (
+                        <div
+                          className={`absolute flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold shadow-md whitespace-nowrap z-20 pointer-events-none transition-all ${badgeColor} ${
+                            box.placement === 'inside'
+                              ? 'top-0.5 left-0.5'
+                              : box.placement === 'top'
+                              ? '-top-5.5 left-0'
+                              : '-bottom-5.5 left-0'
+                          } ${box.isRightAligned && box.placement !== 'inside' ? 'left-auto right-0' : ''}`}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse shrink-0" />
+                          <span className="truncate max-w-[120px]">{box.shortLabel}</span>
+                          <span className="opacity-80 font-normal">({Math.round(box.confidence * 100)}%)</span>
+                        </div>
+                      )}
+
+                      {/* Mode: PINS */}
+                      {boxDisplayMode === 'pins' && (
+                        <div
+                          className={`absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold font-mono shadow-md z-20 transition-transform ${badgeColor} ${
+                            isSelected || isHovered ? 'scale-125 ring-2 ring-white z-30' : ''
+                          }`}
+                        >
+                          {box.pinNumber}
+                        </div>
+                      )}
+
+                      {/* Mode: RETICLES - Micro pin badge on hover/selected */}
+                      {boxDisplayMode === 'reticles' && (isSelected || isHovered) && (
+                        <div
+                          className={`absolute -top-2.5 -left-2.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold font-mono shadow-md z-30 ring-2 ring-white ${badgeColor}`}
+                        >
+                          {box.pinNumber}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
+
+              {/* Floating Live HUD Tooltip on Hover or Selection */}
+              {showBoundingBoxes &&
+                !isNoPackageDetected &&
+                (() => {
+                  const activeHovered = layoutBoxes.find((b) => b.field === (hoveredBoxField || selectedEvidenceField));
+                  if (!activeHovered) return null;
+                  return (
+                    <div className="absolute bottom-3 right-3 max-w-xs bg-slate-950/95 backdrop-blur-md border border-slate-700/90 rounded-xl p-3 shadow-2xl text-slate-200 z-40 animate-in fade-in zoom-in-95 duration-150 pointer-events-none">
+                      <div className="flex items-center justify-between gap-3 pb-1.5 border-b border-slate-800">
+                        <div className="flex items-center space-x-1.5">
+                          <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-bold font-mono flex items-center justify-center">
+                            {activeHovered.pinNumber}
+                          </span>
+                          <span className="font-bold text-xs text-white truncate">{activeHovered.label}</span>
+                        </div>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                            activeHovered.status === 'PASS'
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                              : activeHovered.status === 'FAIL'
+                              ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                          }`}
+                        >
+                          {activeHovered.status} • {Math.round(activeHovered.confidence * 100)}%
+                        </span>
+                      </div>
+
+                      <div className="mt-2 space-y-1.5 text-[11px]">
+                        <div>
+                          <span className="text-slate-400 text-[10px] uppercase font-semibold">OCR Extracted:</span>
+                          <p className="font-mono bg-slate-900/90 px-2 py-1 rounded border border-slate-800 text-slate-100 mt-0.5 line-clamp-2">
+                            "{activeHovered.original_text || 'None detected'}"
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono pt-1">
+                          <span>Rule: {activeHovered.ruleCitation}</span>
+                          <span className="text-blue-400">Click to inspect</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+            </div>
+          </div>
+
+          {/* Interactive Pin & Tag Legend Rail */}
+          {showBoundingBoxes && !isNoPackageDetected && layoutBoxes.length > 0 && (
+            <div className="px-3 py-1.5 bg-slate-950/90 border-t border-slate-800/80 flex items-center gap-1.5 overflow-x-auto text-[11px]">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 shrink-0 mr-1 flex items-center space-x-1">
+                <Hash className="h-3 w-3 text-blue-400" />
+                <span>OCR Fields ({layoutBoxes.length}):</span>
+              </span>
+              {layoutBoxes.map((box) => {
+                const isSelected = selectedEvidenceField === box.field;
+                const isHovered = hoveredBoxField === box.field;
+                return (
+                  <button
+                    key={box.id}
+                    type="button"
+                    onClick={() => setSelectedEvidenceField(box.field)}
+                    onMouseEnter={() => setHoveredBoxField(box.field)}
+                    onMouseLeave={() => setHoveredBoxField(null)}
+                    className={`px-2 py-0.5 rounded-full flex items-center space-x-1.5 transition shrink-0 cursor-pointer text-[10px] font-mono ${
+                      isSelected
+                        ? 'bg-blue-600 text-white font-bold ring-1 ring-blue-300'
+                        : isHovered
+                        ? 'bg-slate-800 text-white ring-1 ring-cyan-400'
+                        : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800'
+                    }`}
+                  >
+                    <span
+                      className={`w-3.5 h-3.5 rounded-full text-[9px] flex items-center justify-center font-bold ${
+                        box.status === 'PASS'
+                          ? 'bg-emerald-600 text-white'
+                          : box.status === 'FAIL'
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-amber-600 text-white'
+                      }`}
+                    >
+                      {box.pinNumber}
+                    </span>
+                    <span>{box.shortLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Packaging Panel Evidence Gallery Bar */}
+          <div className="p-2.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-2 overflow-x-auto">
+            <div className="flex items-center space-x-2 shrink-0">
+              <span className="text-[11px] font-bold text-slate-400 flex items-center space-x-1">
+                <ImageIcon className="h-3.5 w-3.5 text-blue-400" />
+                <span>Panels ({currentInspection.images.length}):</span>
+              </span>
+            </div>
+            <div className="flex items-center space-x-2 overflow-x-auto py-0.5">
+              {currentInspection.images.map((img, idx) => (
+                <button
+                  key={img.id || idx}
+                  type="button"
+                  onClick={() => setActiveImageIndex(idx)}
+                  className={`flex items-center space-x-2 p-1.5 rounded-lg border text-left transition shrink-0 cursor-pointer ${
+                    activeImageIndex === idx
+                      ? 'bg-blue-950/80 border-blue-500 ring-1 ring-blue-400 text-white'
+                      : 'bg-slate-900 border-slate-800 hover:border-slate-700 text-slate-300'
+                  }`}
+                >
+                  <div className="h-9 w-9 rounded bg-slate-950 flex items-center justify-center overflow-hidden border border-slate-700 shrink-0">
+                    <img
+                      src={normalizeImageUrl(img.url)}
+                      alt={img.type}
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                  <div className="text-[10px] leading-tight pr-1">
+                    <div className="font-bold text-slate-200">{img.type} Panel</div>
+                    <div className="text-slate-400 font-mono text-[9px]">
+                      {img.quality?.resolution || 'HD'} • {img.quality?.overall || 'GOOD'}
+                    </div>
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
 
@@ -390,6 +1076,76 @@ export const EvidenceViewer: React.FC = () => {
 
         {/* Right: Field Inspection & Officer Verification Panel (5 cols) */}
         <div className="lg:col-span-5 space-y-4">
+          {/* Predefined Statutory Benchmark & Fields Reference (For Predefined Packages) */}
+          {matchedPreset && (
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl p-4 shadow-xs space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Database className="h-4 w-4 text-blue-700 shrink-0" />
+                  <div>
+                    <h3 className="text-xs font-bold text-blue-950">
+                      Predefined Statutory Benchmark ({matchedPreset.predefinedFields.length} Fields)
+                    </h3>
+                    <p className="text-[10px] text-blue-800">
+                      Dataset: {matchedPreset.title}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPredefinedBenchmark(!showPredefinedBenchmark)}
+                  className="text-xs text-blue-700 hover:text-blue-900 p-1 rounded hover:bg-blue-100/60 transition cursor-pointer"
+                >
+                  {showPredefinedBenchmark ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </button>
+              </div>
+
+              {showPredefinedBenchmark && (
+                <div className="max-h-48 overflow-y-auto space-y-1.5 pt-1 pr-1">
+                  {matchedPreset.predefinedFields.map((field, fIdx) => (
+                    <div
+                      key={fIdx}
+                      onClick={() => {
+                        setSelectedEvidenceField(field.field);
+                        const targetImgIdx = currentInspection.images.findIndex(
+                          (img) => img.type?.toLowerCase() === field.panel?.toLowerCase()
+                        );
+                        if (targetImgIdx >= 0) setActiveImageIndex(targetImgIdx);
+                      }}
+                      className="p-2 bg-white/90 hover:bg-white rounded-lg border border-blue-100 cursor-pointer text-xs flex items-center justify-between gap-2 transition hover:shadow-2xs"
+                    >
+                      <div className="truncate space-y-0.5">
+                        <div className="flex items-center space-x-1.5">
+                          <span className="font-bold text-slate-900">{field.label}</span>
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-semibold">
+                            {field.panel} Panel
+                          </span>
+                        </div>
+                        <div className="font-mono text-[10px] text-slate-600 truncate">
+                          {field.value}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span
+                          className={`text-[9px] font-bold font-mono px-1.5 py-0.5 rounded ${
+                            field.status === 'PASS'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : field.status === 'FAIL'
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {field.status}
+                        </span>
+                        <div className="text-[9px] text-slate-400 font-mono mt-0.5">{field.ruleCitation}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Declarations selector pill list */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs space-y-3">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
@@ -414,7 +1170,15 @@ export const EvidenceViewer: React.FC = () => {
                   return (
                     <button
                       key={decl.field}
-                      onClick={() => setSelectedEvidenceField(decl.field)}
+                      onClick={() => {
+                        setSelectedEvidenceField(decl.field);
+                        const targetIdx = currentInspection.images.findIndex(
+                          (img) => img.id === decl.image_id || img.type === decl.image_type
+                        );
+                        if (targetIdx >= 0 && targetIdx !== activeImageIndex) {
+                          setActiveImageIndex(targetIdx);
+                        }
+                      }}
                       className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs transition ${
                         isSelected
                           ? 'bg-blue-50 border border-blue-300 text-blue-900 font-bold'
