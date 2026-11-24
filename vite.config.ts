@@ -12,6 +12,9 @@ export default defineConfig(() => {
       },
     },
     server: {
+      host: '0.0.0.0',
+      port: 3000,
+      allowedHosts: true as const,
       // Disable HMR websocket server to prevent connection errors in cloud sandbox
       hmr: false,
       watch: null,
