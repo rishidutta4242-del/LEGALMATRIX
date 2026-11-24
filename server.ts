@@ -240,6 +240,10 @@ async function startServer() {
 
       const newRecord: InspectionRecord = {
         id: newId,
+        demo_preset_id: body.demo_preset_id || body.images?.find((image: InspectionImage) => image.demo_preset_id)?.demo_preset_id,
+        data_source: body.demo_preset_id || body.images?.some((image: InspectionImage) => image.demo_preset_id)
+          ? 'DEMO_PRESET'
+          : 'MANUAL_ENTRY',
         product_name: body.product_name || 'Unlabeled Package',
         brand: body.brand || 'Unknown Brand',
         category: (body.category as ProductCategory) || 'Food',
@@ -289,6 +293,8 @@ async function startServer() {
       if (!imagesToAnalyze || imagesToAnalyze.length === 0) {
         return res.status(400).json({ error: 'At least one package label image is required for analysis.' });
       }
+      const demoPresetId = req.body.demo_preset_id || inspection.demo_preset_id ||
+        imagesToAnalyze.find((image: InspectionImage) => image.demo_preset_id)?.demo_preset_id;
 
       // 1. Multimodal AI Extraction with Gemini
       const extraction = await analyzePackageImagesWithGemini(
@@ -297,7 +303,8 @@ async function startServer() {
         {
           productName: inspection.product_name,
           brand: inspection.brand,
-          barcode: inspection.barcode
+          barcode: inspection.barcode,
+          demoPresetId
         }
       );
 
@@ -424,6 +431,8 @@ async function startServer() {
         chain_of_custody: custody,
         cross_regime_notices: crossRegimeNotices,
         plain_language_summary: finalSummary,
+        demo_preset_id: demoPresetId,
+        data_source: demoPresetId ? 'DEMO_PRESET' : extraction.is_fallback ? 'MANUAL_ENTRY' : 'LIVE_AI',
         package_level: currentPkgLevel,
         bulk_box_details: currentBulkDetails,
         mfg_date_stated: mfgDateStated,
@@ -680,7 +689,8 @@ async function startServer() {
         productName: inspection.product_name,
         brand: inspection.brand,
         category: inspection.category,
-        barcode: inspection.barcode
+        barcode: inspection.barcode,
+        demoPresetId: inspection.demo_preset_id
       });
 
       // Retain back/other declarations, replace front declarations

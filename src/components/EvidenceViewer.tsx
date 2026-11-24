@@ -175,24 +175,9 @@ export const EvidenceViewer: React.FC = () => {
   const [overrideRemarks, setOverrideRemarks] = useState<string>('');
 
   const matchedPreset = useMemo(() => {
-    if (!currentInspection) return null;
-    return (
-      PREDEFINED_DEMO_PACKAGES.find(
-        (p) =>
-          (p.barcode && currentInspection.barcode && p.barcode === currentInspection.barcode) ||
-          (p.productName &&
-            currentInspection.product_name &&
-            p.productName.toLowerCase().trim() === currentInspection.product_name.toLowerCase().trim()) ||
-          (currentInspection.product_name &&
-            (p.productName.toLowerCase().includes(currentInspection.product_name.toLowerCase()) ||
-              currentInspection.product_name.toLowerCase().includes(p.productName.toLowerCase()))) ||
-          (currentInspection.id &&
-            ((currentInspection.id.includes('001') && p.id === 'demo-compliant-cookies') ||
-              (currentInspection.id.includes('002') && p.id === 'demo-violation-shampoo') ||
-              (currentInspection.id.includes('003') && p.id === 'demo-protein-contradiction') ||
-              (currentInspection.id.includes('004') && p.id === 'demo-bulk-carton')))
-      ) || null
-    );
+    return currentInspection?.demo_preset_id
+      ? PREDEFINED_DEMO_PACKAGES.find((preset) => preset.id === currentInspection.demo_preset_id) || null
+      : null;
   }, [currentInspection]);
 
   if (!currentInspection || !currentInspection.images || currentInspection.images.length === 0) {
@@ -1363,4 +1348,3 @@ export const EvidenceViewer: React.FC = () => {
     </div>
   );
 };
-

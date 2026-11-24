@@ -232,6 +232,8 @@ export const NewInspectionView: React.FC = () => {
 
   // Process image files with dimension & payload optimization
   const processImageFile = (file: File, defaultType: ImageType = 'Front') => {
+    setSelectedPreset(null);
+    setImages((prev) => prev.map(({ demo_preset_id: _demoPresetId, ...image }) => image));
     const reader = new FileReader();
     reader.onload = async (e) => {
       const rawUrl = e.target?.result as string;
@@ -277,11 +279,13 @@ export const NewInspectionView: React.FC = () => {
   };
 
   const removeImage = (id: string) => {
-    setImages((prev) => prev.filter((img) => img.id !== id));
+    setSelectedPreset(null);
+    setImages((prev) => prev.filter((img) => img.id !== id).map(({ demo_preset_id: _demoPresetId, ...image }) => image));
   };
 
   const updateImageType = (id: string, type: ImageType) => {
-    setImages((prev) => prev.map((img) => (img.id === id ? { ...img, type } : img)));
+    setSelectedPreset(null);
+    setImages((prev) => prev.map(({ demo_preset_id: _demoPresetId, ...img }) => (img.id === id ? { ...img, type } : img)));
   };
 
   const handleLoadDemoPackage = (pkg: DemoPackagePreset) => {
@@ -301,7 +305,7 @@ export const NewInspectionView: React.FC = () => {
       setBulkTotalGrossWeight(pkg.bulkDetails.totalGrossWeight);
       setBulkMasterBarcode(pkg.bulkDetails.masterBarcode);
     }
-    setImages(pkg.images);
+    setImages(pkg.images.map((image) => ({ ...image, demo_preset_id: pkg.id })));
     setShowFieldsPreview(true);
     showToast(`Loaded "${pkg.title}" with ${pkg.images.length} panel images & verified statutory declarations.`, 'success');
   };
@@ -336,6 +340,8 @@ export const NewInspectionView: React.FC = () => {
       showToast('Extracting real-time packaging declarations from product URL...', 'info');
       const data = await fetchProductFromUrl(targetUrl.trim());
       if (data) {
+        setSelectedPreset(null);
+        setImages((previous) => previous.map(({ demo_preset_id: _demoPresetId, ...image }) => image));
         if (data.product_name) setProductName(data.product_name);
         if (data.brand) setBrand(data.brand);
         if (data.category) setCategory(data.category as ProductCategory);
@@ -423,6 +429,8 @@ export const NewInspectionView: React.FC = () => {
       let recordId = pendingRecordId;
       if (!recordId) {
         const newRecord = await createInspection({
+          demo_preset_id: selectedPreset?.id,
+          data_source: selectedPreset ? 'DEMO_PRESET' : 'MANUAL_ENTRY',
           product_name: productName || (packageLevel === 'BULK_BOX' ? 'Wholesale Master Shipper Carton' : 'Packaged Commodity'),
           brand: brand || 'Unspecified Brand',
           category,
@@ -450,6 +458,7 @@ export const NewInspectionView: React.FC = () => {
       // 3. Trigger AI multimodal analysis with 75s timeout
       const analysisRes = await analyzeInspection(recordId, {
         images,
+        demo_preset_id: selectedPreset?.id,
         package_level: packageLevel,
         bulk_box_details: packageLevel === 'BULK_BOX' ? {
           inner_retail_units_count: bulkUnitsCount,
@@ -1583,7 +1592,8 @@ export const NewInspectionView: React.FC = () => {
         isOpen={isLiveCameraOpen}
         onClose={() => setIsLiveCameraOpen(false)}
         onCapture={(img) => {
-          setImages((prev) => [...prev, img]);
+         setSelectedPreset(null);
+         setImages((prev) => [...prev.map(({ demo_preset_id: _demoPresetId, ...image }) => image), img]);
           showToast(`Captured high-resolution ${img.type} panel view.`, 'success');
         }}
       />
@@ -1619,4 +1629,3 @@ export const NewInspectionView: React.FC = () => {
     </div>
   );
 };
-

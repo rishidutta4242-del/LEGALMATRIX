@@ -99,7 +99,12 @@ export async function createInspection(data: Partial<InspectionRecord>): Promise
 
 export async function analyzeInspection(
   id: string,
-  imagesOrPayload?: any[] | { images?: any[]; package_level?: string; bulk_box_details?: any },
+  imagesOrPayload?: any[] | {
+    images?: any[];
+    package_level?: string;
+    bulk_box_details?: any;
+    demo_preset_id?: string;
+  },
   timeoutMs: number = 65000
 ): Promise<{ success: boolean; inspection: InspectionRecord; ai_source: string; certificate?: any }> {
   const controller = new AbortController();
@@ -428,4 +433,3 @@ export async function fetchProductFromUrl(url: string): Promise<{
 }
 
 export const getCurrentUser = fetchCurrentUser;
-

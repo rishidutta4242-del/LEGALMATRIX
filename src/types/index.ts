@@ -53,6 +53,7 @@ export interface InspectionImage {
   type: ImageType;
   url: string; // base64 or data URL
   name: string;
+  demo_preset_id?: string;
   sizeBytes?: number;
   sha256?: string;
   preprocessed_url?: string;
@@ -220,6 +221,8 @@ export interface PipelineStageStatus {
 
 export interface InspectionRecord {
   id: string;
+  demo_preset_id?: string;
+  data_source?: 'LIVE_AI' | 'DEMO_PRESET' | 'MANUAL_ENTRY';
   product_name: string;
   brand: string;
   category: ProductCategory;
