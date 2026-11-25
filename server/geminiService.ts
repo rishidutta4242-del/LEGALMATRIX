@@ -1,17 +1,48 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import {
+  AiAnalysisStatus,
   ExtractedDeclaration,
   InspectionImage,
+  LocalOcrPanelResult,
   ProductCategory,
-  DeclarationStatus
+  DeclarationStatus,
 } from "../src/types/index";
-import { normalizeMRP, normalizeNetQuantity, normalizeDate, normalizePhone, normalizeEmail } from "./normalizer";
-import { prepareMultimodalImageParts, preprocessImageForOcr } from "./imagePreprocessor";
+import {
+  normalizeMRP,
+  normalizeNetQuantity,
+  normalizeDate,
+  normalizePhone,
+  normalizeEmail,
+} from "./normalizer";
+import { prepareMultimodalImageParts } from "./imagePreprocessor";
 import { getDemoFallbackExtraction, getDemoFrontRecalibration, isDemoPresetId } from "./demoProfiles";
+import { extractDeclarationsFromOcrPanels } from "../src/utils/ocrFieldParser";
+import {
+  ADVISORY_AI_CONFIG_ERROR,
+  ADVISORY_AI_SKIPPED,
+  ADVISORY_AI_UNAVAILABLE,
+  classifyGeminiError,
+  getAiRuntimeConfig,
+  getCachedAnalysisResponse,
+  getInFlightAnalysis,
+  getOrderedCandidateModels,
+  recordModelFailure,
+  recordModelSuccess,
+  setCachedAnalysisResponse,
+  setInFlightAnalysis,
+} from "./geminiCircuitBreaker";
 
 let aiClient: GoogleGenAI | null = null;
+let testClientOverride: any | null = null;
+
+export function __setGeminiClientForTest(mockClient: any | null): void {
+  testClientOverride = mockClient;
+}
 
 function getGeminiClient(): GoogleGenAI | null {
+  if (testClientOverride) {
+    return testClientOverride;
+  }
   if (!aiClient) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (apiKey && apiKey !== "MY_GEMINI_API_KEY") {
@@ -33,6 +64,23 @@ function getGeminiClient(): GoogleGenAI | null {
   return aiClient;
 }
 
+export interface LocalOcrContext {
+  panels?: LocalOcrPanelResult[];
+  declarations?: ExtractedDeclaration[];
+  avgConfidence?: number;
+  lowConfidenceDetected?: boolean;
+}
+
+export interface AnalysisExecutionOptions {
+  allowFallback?: boolean;
+  skipAi?: boolean;
+  scanId?: string;
+  requestCacheKey?: string;
+  localOcr?: LocalOcrContext;
+  maxRetriesOverride?: number;
+  retryBaseDelayMsOverride?: number;
+}
+
 export interface MultimodalAnalysisResult {
   is_package_detected?: boolean;
   product: {
@@ -48,6 +96,12 @@ export interface MultimodalAnalysisResult {
   warnings: string[];
   ai_notes: string;
   is_fallback: boolean;
+  ocr_completed?: boolean;
+  ai_assisted_completed?: boolean;
+  ai_status?: AiAnalysisStatus;
+  ai_model_used?: string;
+  advisory_message?: string;
+  ocr_panels?: LocalOcrPanelResult[];
   preprocessed_images?: Array<{
     id: string;
     type: string;
@@ -73,28 +127,22 @@ function cleanJsonText(raw: string): string {
     text = text.substring(0, text.length - 3);
   }
   text = text.trim();
-  // If there is still extra preamble before the first { or [
   const firstBrace = text.indexOf("{");
   const lastBrace = text.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
     text = text.substring(firstBrace, lastBrace + 1);
   }
-  // Strip invalid trailing commas before } or ]
   text = text.replace(/,\s*([}\]])/g, "$1");
   return text;
 }
 
 /**
  * Universal bounding box normalizer.
- * Supports:
- * - { ymin, xmin, ymax, xmax }
- * - [ ymin, xmin, ymax, xmax ] (e.g. Gemini box_2d)
- * - Standard 0..1000 coordinate scale (converts to percentage 0..100)
- * - 0.0..1.0 normalized scale (converts to percentage 0..100)
- * - Standard 0..100 percentage scale
- * - Prevents collapsed or bottom-right corner clamped boxes
  */
-export function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number; xmin: number; ymax: number; xmax: number } | undefined {
+export function normalizeBbox(
+  raw: any,
+  isExplicitBox2d = false
+): { ymin: number; xmin: number; ymax: number; xmax: number } | undefined {
   if (!raw) return undefined;
 
   let ymin = 0;
@@ -110,7 +158,6 @@ export function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number
       xmax = Number(raw[3]) || 0;
 
       if (isExplicitBox2d) {
-        // Gemini box_2d is strictly 0..1000 integer scale
         ymin = (ymin / 1000) * 100;
         xmin = (xmin / 1000) * 100;
         ymax = (ymax / 1000) * 100;
@@ -135,8 +182,18 @@ export function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number
   } else if (typeof raw === "object") {
     ymin = Number(raw.ymin ?? raw.top ?? raw.y ?? raw.y1 ?? 0);
     xmin = Number(raw.xmin ?? raw.left ?? raw.x ?? raw.x1 ?? 0);
-    ymax = Number(raw.ymax ?? raw.bottom ?? raw.y2 ?? (raw.y !== undefined && raw.height !== undefined ? Number(raw.y) + Number(raw.height) : 0));
-    xmax = Number(raw.xmax ?? raw.right ?? raw.x2 ?? (raw.x !== undefined && raw.width !== undefined ? Number(raw.x) + Number(raw.width) : 0));
+    ymax = Number(
+      raw.ymax ??
+        raw.bottom ??
+        raw.y2 ??
+        (raw.y !== undefined && raw.height !== undefined ? Number(raw.y) + Number(raw.height) : 0)
+    );
+    xmax = Number(
+      raw.xmax ??
+        raw.right ??
+        raw.x2 ??
+        (raw.x !== undefined && raw.width !== undefined ? Number(raw.x) + Number(raw.width) : 0)
+    );
 
     const maxVal = Math.max(ymin, xmin, ymax, xmax);
     if (maxVal > 100) {
@@ -154,7 +211,6 @@ export function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number
     return undefined;
   }
 
-  // Ensure min < max
   if (ymin > ymax) {
     const tmp = ymin;
     ymin = ymax;
@@ -166,13 +222,11 @@ export function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number
     xmax = tmp;
   }
 
-  // Round to 1 decimal place and clamp
   ymin = Math.max(0, Math.min(99, Math.round(ymin * 10) / 10));
   xmin = Math.max(0, Math.min(99, Math.round(xmin * 10) / 10));
   ymax = Math.max(ymin + 1, Math.min(100, Math.round(ymax * 10) / 10));
   xmax = Math.max(xmin + 1, Math.min(100, Math.round(xmax * 10) / 10));
 
-  // If the box is completely collapsed, return undefined
   if (ymax - ymin < 0.5 && xmax - xmin < 0.5) {
     return undefined;
   }
@@ -183,327 +237,463 @@ export function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number
   return { ymin, xmin, ymax, xmax };
 }
 
+function tokenizeForMatch(text?: string): string[] {
+  return (text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9₹]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
+}
+
+function snapDeclarationToLocalOcrBox(
+  decl: ExtractedDeclaration,
+  panels?: LocalOcrPanelResult[]
+): { bbox: NonNullable<ExtractedDeclaration['bbox']>; box_2d: [number, number, number, number] } | null {
+  if (!panels || panels.length === 0) return null;
+  const panel =
+    panels.find((p) => p.image_id === decl.image_id) ||
+    panels.find((p) => p.image_type?.toLowerCase() === decl.image_type?.toLowerCase()) ||
+    (panels.length === 1 ? panels[0] : undefined);
+  if (!panel?.lines?.length) return null;
+
+  const targetTokens = tokenizeForMatch(decl.original_text || decl.normalized_value);
+  if (targetTokens.length === 0) return null;
+
+  let bestLineScore = 0;
+  let bestLine: LocalOcrPanelResult['lines'][number] | null = null;
+  for (const line of panel.lines) {
+    if (!line?.bbox || !line.text) continue;
+    const lineTokens = tokenizeForMatch(line.text);
+    if (lineTokens.length === 0) continue;
+    const matches = targetTokens.filter((t) => lineTokens.some((lt) => lt === t || (t.length >= 3 && lt.includes(t)))).length;
+    const score = matches / targetTokens.length;
+    if (score > bestLineScore) {
+      bestLineScore = score;
+      bestLine = line;
+    }
+  }
+
+  if (bestLine && bestLineScore >= 0.6) {
+    const b = bestLine.bbox;
+    return {
+      bbox: b,
+      box_2d: bestLine.box_2d || [
+        Math.round(b.ymin * 10),
+        Math.round(b.xmin * 10),
+        Math.round(b.ymax * 10),
+        Math.round(b.xmax * 10),
+      ],
+    };
+  }
+  return null;
+}
+
+export function mergeLocalAndGeminiDeclarations(
+  localDecls: ExtractedDeclaration[],
+  geminiDecls: ExtractedDeclaration[],
+  localPanels?: LocalOcrPanelResult[]
+): ExtractedDeclaration[] {
+  if (localDecls.length === 0 && (!localPanels || localPanels.length === 0)) return geminiDecls;
+  if (geminiDecls.length === 0) return localDecls;
+
+  const merged: ExtractedDeclaration[] = geminiDecls.map((gDecl) => {
+    const localMatch = localDecls.find(
+      (l) => l.field === gDecl.field && (!gDecl.image_id || l.image_id === gDecl.image_id)
+    );
+
+    if (localMatch?.bbox) {
+      const gTokens = tokenizeForMatch(gDecl.original_text || gDecl.normalized_value);
+      const lTokens = tokenizeForMatch(localMatch.original_text || localMatch.normalized_value);
+      const overlapCount = gTokens.filter((t) => lTokens.some((lt) => lt === t || (t.length >= 3 && lt.includes(t)))).length;
+      const textsAgree = gTokens.length === 0 || lTokens.length === 0 || overlapCount > 0;
+      const gArea = gDecl.bbox ? (gDecl.bbox.ymax - gDecl.bbox.ymin) * (gDecl.bbox.xmax - gDecl.bbox.xmin) : 0;
+
+      // Prefer verified Tesseract pixel boxes ONLY when local & Gemini text agree (never clobber stylized AI logo boxes like OREO with mismatched local fragments)
+      if (textsAgree && (!gDecl.bbox || gArea > 1800 || localMatch.bbox)) {
+        return {
+          ...gDecl,
+          bbox: localMatch.bbox,
+          box_2d: localMatch.box_2d,
+          original_text: gDecl.original_text || localMatch.original_text,
+          normalized_value: gDecl.normalized_value || localMatch.normalized_value,
+        };
+      }
+    }
+
+    // If Gemini found a declaration local parser missed (or texts differed), try snapping to exact local OCR line coordinates
+    const snapped = snapDeclarationToLocalOcrBox(gDecl, localPanels);
+    if (snapped) {
+      return {
+        ...gDecl,
+        bbox: snapped.bbox,
+        box_2d: snapped.box_2d,
+        original_text: gDecl.original_text || localMatch?.original_text || '',
+        normalized_value: gDecl.normalized_value || localMatch?.normalized_value || '',
+      };
+    }
+
+    if (!localMatch) return gDecl;
+
+    const gTokensFallback = tokenizeForMatch(gDecl.original_text || gDecl.normalized_value);
+    const lTokensFallback = tokenizeForMatch(localMatch.original_text || localMatch.normalized_value);
+    const fallbackAgree =
+      gTokensFallback.length === 0 ||
+      lTokensFallback.length === 0 ||
+      gTokensFallback.some((t) => lTokensFallback.some((lt) => lt === t || (t.length >= 3 && lt.includes(t))));
+
+    return {
+      ...gDecl,
+      bbox: gDecl.bbox || (fallbackAgree ? localMatch.bbox : undefined),
+      box_2d: gDecl.bbox ? gDecl.box_2d : fallbackAgree ? localMatch.box_2d : undefined,
+      original_text: gDecl.original_text || localMatch.original_text,
+      normalized_value: gDecl.normalized_value || localMatch.normalized_value,
+    };
+  });
+
+  // Preserve any valid declarations found by local Tesseract OCR that Gemini skipped
+  for (const local of localDecls) {
+    const alreadyPresent = merged.some(
+      (m) => m.field === local.field && (m.found || m.image_id === local.image_id)
+    );
+    if (!alreadyPresent && local.found) {
+      merged.push(local);
+    }
+  }
+
+  return merged;
+}
+
+function deriveImageQualityFromInputs(
+  images: InspectionImage[],
+  panels?: LocalOcrPanelResult[],
+  hasLocalOcrText?: boolean
+): { overall: "GOOD" | "FAIR" | "POOR"; issues: string[] } {
+  const issues: string[] = [];
+  let hasPoor = false;
+  let hasFair = false;
+
+  for (const img of images) {
+    if (img.quality?.overall === "POOR") hasPoor = true;
+    if (img.quality?.overall === "FAIR") hasFair = true;
+    if (img.quality?.issues?.length) {
+      issues.push(...img.quality.issues);
+    }
+  }
+  for (const p of panels || []) {
+    if (p.quality?.overall === "POOR") hasPoor = true;
+    if (p.quality?.overall === "FAIR") hasFair = true;
+  }
+
+  if (issues.length === 0 && !hasLocalOcrText) {
+    issues.push("Automated text readability could not be verified without manual check.");
+  }
+
+  return {
+    overall: hasPoor ? "POOR" : hasFair ? "FAIR" : "GOOD",
+    issues: Array.from(new Set(issues)),
+  };
+}
+
 export async function analyzePackageImagesWithGemini(
   images: InspectionImage[],
   category: ProductCategory,
   metadata?: { productName?: string; brand?: string; barcode?: string; demoPresetId?: string },
-  allowFallback = true
+  allowFallbackOrOptions: boolean | AnalysisExecutionOptions = true
 ): Promise<MultimodalAnalysisResult> {
+  const options: AnalysisExecutionOptions =
+    typeof allowFallbackOrOptions === "boolean"
+      ? { allowFallback: allowFallbackOrOptions }
+      : allowFallbackOrOptions || {};
+
   const demoPresetId = metadata?.demoPresetId || images.find((image) => image.demo_preset_id)?.demo_preset_id;
   let preprocessedImages: MultimodalAnalysisResult["preprocessed_images"] = undefined;
 
-  // Execute calibrated demo dataset extraction immediately after Sharp preprocessing (no unnecessary cloud wait or 503 retries)
+  // 1. Calibrated demo presets bypass Gemini entirely
   if (demoPresetId && isDemoPresetId(demoPresetId)) {
     try {
       const prep = await prepareMultimodalImageParts(images);
       preprocessedImages = prep.preprocessedImages;
-    } catch (prepErr: any) {
-      console.log("[LegalMetrix Vision] Sharp preprocessing skipped on demo preset:", prepErr?.message || prepErr);
+    } catch {
+      // SVG demo presets can skip sharp preprocessing
     }
     const demoResult = getDemoFallbackExtraction(demoPresetId, images);
     if (demoResult) {
       return {
         ...demoResult,
+        ocr_completed: true,
+        ai_assisted_completed: false,
+        ai_status: "DEMO_PRESET",
         preprocessed_images: preprocessedImages,
       };
     }
   }
 
-  const client = getGeminiClient();
+  // 2. Check response cache & in-flight deduplication when cacheKey is supplied
+  if (options.requestCacheKey) {
+    const cached = getCachedAnalysisResponse<MultimodalAnalysisResult>(options.requestCacheKey);
+    if (cached) return cached;
 
-  if (!client) {
-    if (!allowFallback) throw new Error("Gemini is unavailable; front-panel recalibration requires live AI.");
-    console.log("[LegalMetrix Vision] No Gemini API key configured, utilizing local extraction engine.");
-    try {
-      const prep = await prepareMultimodalImageParts(images);
-      preprocessedImages = prep.preprocessedImages;
-    } catch {}
-    return generateFallbackExtraction(images, category, metadata, preprocessedImages);
+    const existingPromise = getInFlightAnalysis<MultimodalAnalysisResult>(options.requestCacheKey);
+    if (existingPromise) return existingPromise;
   }
 
-  try {
-    const parts: any[] = [];
+  const execute = async (): Promise<MultimodalAnalysisResult> => {
+    const runtimeConfig = getAiRuntimeConfig();
+    const client = getGeminiClient();
 
-    // Multi-stage OCR image preprocessing (grayscale, contrast adjustment, thresholding, edge sharpening) via Sharp
-    const prepResult = await prepareMultimodalImageParts(images);
-    preprocessedImages = prepResult.preprocessedImages;
-    parts.push(...prepResult.parts);
+    // Respect admin toggle or explicit skipAi flag
+    if (options.skipAi || !runtimeConfig.aiEnabled) {
+      try {
+        const prep = await prepareMultimodalImageParts(images);
+        preprocessedImages = prep.preprocessedImages;
+      } catch {
+        // Optional sharp preview enrichment
+      }
+      return generateFallbackExtraction(
+        images,
+        category,
+        metadata,
+        preprocessedImages,
+        options.localOcr,
+        "SKIPPED",
+        ADVISORY_AI_SKIPPED
+      );
+    }
 
-    const systemPrompt = `You are LEGALMETRIX, an AI-assisted Legal Metrology Multimodal Compliance Engine built for the Department of Consumer Affairs (DoCA), Government of India (SIH 2026 - PS 26034).
+    const candidateModels = getOrderedCandidateModels();
+    if (!client || candidateModels.length === 0) {
+      try {
+        const prep = await prepareMultimodalImageParts(images);
+        preprocessedImages = prep.preprocessedImages;
+      } catch {
+        // Optional sharp preview enrichment
+      }
+      const advisory = ADVISORY_AI_UNAVAILABLE;
+      return generateFallbackExtraction(
+        images,
+        category,
+        metadata,
+        preprocessedImages,
+        options.localOcr,
+        "UNAVAILABLE",
+        advisory
+      );
+    }
 
-Your objective is to inspect consumer packaging labels from uploaded product photos, extract mandatory statutory declarations required under the Legal Metrology (Packaged Commodities) Rules, 2011, and output structured data with precise 2D bounding boxes.
+    try {
+      const parts: any[] = [];
+      try {
+        const prepResult = await prepareMultimodalImageParts(images);
+        preprocessedImages = prepResult.preprocessedImages;
+        parts.push(...prepResult.parts);
+      } catch (prepErr) {
+        // If Sharp cannot decode an exotic payload, still allow text-augmented Gemini analysis if OCR text exists
+        if (!options.localOcr?.panels?.length) {
+          throw prepErr;
+        }
+      }
 
----
+      const localOcrTextSummary = (options.localOcr?.panels || [])
+        .map((p, idx) => {
+          const snippet = (p.text || "").trim().slice(0, 1400);
+          return snippet
+            ? `Panel #${idx} (${p.image_type}, OCR conf ${Math.round((p.confidence || 0) * 100)}%):\n${snippet}`
+            : "";
+        })
+        .filter(Boolean)
+        .join("\n\n");
 
-### CRITICAL VISION EXTRACTION PROTOCOLS
+      const systemPrompt = `You are LEGALMETRIX, an AI-assisted Legal Metrology Multimodal Compliance Engine built for the Department of Consumer Affairs (DoCA), Government of India (SIH 2026 - PS 26034).
 
-1. PACKAGE DETECTION:
-   - Identify if a package, box, pouch, bottle, label, or retail product is present.
-   - Set "is_package_detected": true if packaging is visible.
-   - Set "is_package_detected": false ONLY if the image contains no retail product.
+Your objective is to inspect consumer packaging labels (and assist local Tesseract OCR text where provided), extract mandatory statutory declarations required under the Legal Metrology (Packaged Commodities) Rules, 2011, and output structured JSON with precise 2D bounding boxes.
 
-2. VERBATIM EXTRACTION (ZERO HALLUCINATION):
-   - Extract EXACT text as printed on the packaging.
-   - If a statutory field is visible: set "found": true, "status": "FOUND", and extract "original_text".
-   - If a statutory field is absent/not visible: set "found": false, "status": "NOT_FOUND", "confidence": 0.0, and "original_text": "".
-   - If text is degraded, partially cut off, or blurred: set "status": "UNCERTAIN" with a confidence score between 0.35 and 0.65.
-
-3. 2D BOUNDING BOX DETECTIONS & EXACT IMAGE ATTRIBUTION:
-   - For every extracted field, detect its precise 2D bounding box wrapping the text line.
-   - Format: "box_2d": [ymin, xmin, ymax, xmax] normalized to a 0-1000 integer scale ([0,0] top-left, [1000,1000] bottom-right) strictly on the image where that text is visible.
-   - "image_index": Exact integer index of the image (0 for Image #0, 1 for Image #1, etc.) where this text is physically printed.
-   - "image_id": Exact ID string of that image (from the header label provided above each image).
-   - "image_type": "Front", "Back", "Side", etc.
-
-4. MULTI-IMAGE SEPARATION (STRICT NO CROSS-IMAGE BLEED / HALLUCINATION):
-   - Packaging labels have distinct panels:
-     - Front panel usually shows: Brand Name, Generic Product/Commodity Name, and sometimes front Net Quantity.
-     - Back or Side panel usually shows: Ingredients, Nutritional Information, Manufacturer and Packer names & full postal addresses, Consumer Care phone/email/address, Barcode/GTIN, Batch/Lot number, Best Before / Expiry date, Maximum Retail Price (MRP), Unit Sale Price (USP), FSSAI license numbers.
-   - NEVER place a bounding box or attribute a declaration to Image #0 (Front) for text that is printed on Image #1 (Back)!
-   - If Consumer Care, Manufacturer Address, Barcode, Best Before, or Batch Number is on Image #1 (Back), set "image_index": 1, "image_type": "Back", and "box_2d" strictly relative to Image #1.
-   - If a declaration appears on multiple images (e.g. Net Quantity on both Front and Back), you may extract both or pick the clearest one and specify its exact image.
-
-5. MULTILINGUAL & REGIONAL SCRIPT HANDLING:
-   - For regional Indian scripts (Hindi, Tamil, Telugu, Kannada, Marathi, Bengali, etc.), populate:
-     - "script": Language/Script name.
-     - "original_script_text": Raw regional text verbatim.
-     - "translated_en": English translation of the statutory declaration.
-
----
-
-### MANDATORY DECLARATION TARGETS (Rule 6 & Schedule II)
-
-Extract all available statutory fields:
-1. brand_name: Brand Name / Trademark (e.g., "Britannia", "Aura Organics", "Amul", "Parle").
-2. product_name: Generic / Common Commodity Name (e.g., "Digestive Biscuits", "Whole Wheat Atta", "Full Cream Milk").
-3. sub_brand: Sub-Brand or product line identifier (e.g., "NutriChoice", "Digestive", "Classic").
-4. front_claims: Front-of-pack statutory / dietary claims (e.g., "HI-Fibre", "100% Atta", "Zero Added Sugar").
-5. veg_non_veg: Dietary classification mark (Green dot in square for 100% Vegetarian, or brown triangle for Non-Veg).
-6. net_quantity: Net quantity with standard metric units (g, kg, ml, L, N, etc.) - extract from both Front PDP and Back panels.
-7. manufacturer_name: Name and complete address (with PIN code) of manufacturer.
-8. packer_name: Name and address of packer (if distinct).
-9. importer_name: Name and address of importer (for imported items).
-10. country_of_origin: Country of manufacture/assembly.
-11. mrp: Maximum Retail Price including all taxes (e.g., "MRP Rs. 120.00 incl. of all taxes").
-12. unit_sale_price: Unit sale price declaration (e.g., "Rs. 1.50 per gram").
-13. mfg_date: Month and year of manufacture/packaging (e.g., "03/2026").
-14. best_before: Best before or Expiry / Use by date.
-15. use_by: Use by date (if specified).
-16. consumer_care: Consumer Care officer address / contact details.
-17. consumer_care_phone: Helpline / Toll-free telephone number.
-18. consumer_care_email: Customer care email address.
-19. batch_number: Batch / Lot / Code number.
-20. barcode: Barcode / GTIN number.
-
----
-
-### FRONT PANEL / PRINCIPAL DISPLAY PANEL (PDP) OCR SPECIALIZATION
-CRITICAL ACCURACY MANDATE FOR FRONT PANEL:
-- On the front panel (Image #0 / Front view), you MUST perform dense OCR detection:
-  * brand_name: Tightly enclose the brand logo or trademark lettering.
-  * product_name: Tightly enclose the actual characters of the generic commodity name. DO NOT place bounding boxes in blank background space or margins!
-  * sub_brand: Tightly enclose sub-brand or variant words.
-  * veg_non_veg: Tightly enclose the green vegetarian mark or non-veg symbol.
-  * front_claims: Tightly enclose prominent dietary or statutory claims.
-  * net_quantity: If printed on the front, tightly enclose the net weight/volume statement.
-- Every bounding box [ymin, xmin, ymax, xmax] MUST strictly hug the glyph boundaries of the printed text or icon.
-- ZERO-OVERLAP DISCIPLINE: Distinct declarations on the same panel MUST have mutually disjoint bounding boxes whenever they occupy separate lines or regions. Never merge multiple stacked declarations into one oversized container box.
-
----
-
-### JSON OUTPUT SCHEMA
-
-Return strictly raw JSON conforming to this schema:
+CRITICAL VISION EXTRACTION PROTOCOLS:
+1. Set "is_package_detected": false ONLY if the image contains no retail packaged product.
+2. Extract verbatim text; mark degraded/obscured text as "UNCERTAIN" (confidence 0.35-0.65).
+3. Provide "box_2d": [ymin, xmin, ymax, xmax] on 0-1000 scale tightly enclosing text or stylized brand wordmarks on the exact "image_index", "image_id", and "image_type".
+4. ALWAYS extract stylized/3D/illustrated trademarks on the Front panel (e.g. OREO, Cadbury, Britannia, Maggi, Lay's, Parle, Amul) as "brand_name" with tight box_2d around the brand logo — NEVER mistake flavor/variant badges (e.g. "Original", "Classic") or clipped fragments for brand_name or product_name. Extract the generic commodity description (e.g. "Chocolatey Sandwich Biscuits", "Digestive Biscuits") as "product_name".
+5. Strictly separate Front vs Back panel declarations (no cross-panel bleed).
+6. Return ONLY raw JSON matching:
 {
   "is_package_detected": true,
-  "product": {
-    "name": "Generic Commodity Name",
-    "brand": "Brand Name",
-    "category": "Food | Cosmetics | Household | Electronics | Other"
-  },
+  "product": { "name": "", "brand": "", "category": "" },
   "declarations": [
     {
-      "field": "product_name",
-      "label": "Generic Commodity Name",
-      "original_text": "Digestive",
+      "field": "product_name|brand_name|sub_brand|front_claims|veg_non_veg|net_quantity|manufacturer_name|packer_name|importer_name|country_of_origin|mrp|unit_sale_price|mfg_date|best_before|use_by|consumer_care|consumer_care_phone|consumer_care_email|batch_number|barcode",
+      "label": "",
+      "original_text": "",
       "original_script_text": null,
       "script": null,
       "translated_en": null,
       "found": true,
-      "status": "FOUND",
-      "confidence": 0.98,
+      "status": "FOUND|NOT_FOUND|UNCERTAIN",
+      "confidence": 0.95,
       "image_index": 0,
       "image_id": "img-id",
-      "image_type": "Front",
-      "box_2d": [630, 280, 755, 485]
+      "image_type": "Front|Back|Side",
+      "box_2d": [0, 0, 100, 100]
     }
   ],
-  "image_quality": {
-    "overall": "GOOD",
-    "issues": []
-  },
-  "ai_notes": "Inspection summary and legibility notes."
-}
-`;
+  "image_quality": { "overall": "GOOD|FAIR|POOR", "issues": [] },
+  "ai_notes": ""
+}`;
 
-    const userPrompt = `Analyze the attached ${images.length} packaged commodity image(s) with high precision OCR and computer vision.
+      const userPrompt = `Analyze the attached ${images.length} packaged commodity image(s) for Legal Metrology Rule 6 & Schedule II declarations.
 Category Hint: ${category}
-Provided Metadata: Name=${metadata?.productName || 'Auto-detect from label'}, Brand=${metadata?.brand || 'Auto-detect from label'}, Barcode=${metadata?.barcode || 'None'}
-Images available for cross-view analysis: ${images.map((im, i) => `Image #${i} [id: "${im.id}", view: "${im.type || 'Panel'}"]`).join(', ')}
+Provided Metadata: Name=${metadata?.productName || "Auto-detect"}, Brand=${metadata?.brand || "Auto-detect"}, Barcode=${metadata?.barcode || "None"}
+Images: ${images.map((im, i) => `Image #${i} [id: "${im.id}", view: "${im.type || "Panel"}"]`).join(", ")}
+${localOcrTextSummary ? `\nLocal Tesseract OCR pre-extracted text (verify and enhance semantically):\n${localOcrTextSummary}\n` : ""}
+Return strictly raw JSON.`;
 
-Extract all mandatory Legal Metrology declarations under Rule 6 and Schedule II:
-1. brand_name (Brand Name / Trademark e.g. "Britannia", "Aura", "Amul")
-2. product_name (Generic / Common commodity name e.g. "Digestive Biscuits", "Atta")
-3. sub_brand (Sub-brand or product line name e.g. "NutriChoice")
-4. veg_non_veg (Vegetarian green dot symbol / Non-Veg mark)
-5. front_claims (Nutritional / Front claims e.g. "HI-Fibre")
-6. net_quantity (Net weight/volume/units with standard metric unit)
-7. manufacturer_name (Manufacturer name & complete address with PIN code)
-8. packer_name (Packer name & address, if different)
-9. importer_name (Importer name & address, if imported)
-10. country_of_origin (Country of Origin)
-11. mrp (Maximum Retail Price inclusive of all taxes)
-12. unit_sale_price (Unit sale price e.g. Rs./g or Rs./ml)
-13. mfg_date (Month and Year of manufacture / packaging)
-14. best_before (Best before date / duration)
-15. use_by (Use by date / expiry)
-16. consumer_care (Consumer care grievance redressal name/office/address)
-17. consumer_care_phone (Consumer care telephone/toll-free number)
-18. consumer_care_email (Consumer care email address)
-19. batch_number (Batch / Lot Number)
-20. barcode (Barcode / GTIN number)
+      parts.push({ text: userPrompt });
 
-CRITICAL:
-- For each detected declaration, specify the EXACT image_index, image_id, and image_type where the text is physically visible.
-- NEVER put a bounding box on Image #0 (Front) for text that actually appears on Image #1 (Back).
-- box_2d [ymin, xmin, ymax, xmax] MUST tightly hug the exact text glyphs on that specific image on a 0-1000 scale and MUST NOT overlap sibling declaration boxes on separate lines.`;
+      const maxRetries = options.maxRetriesOverride ?? runtimeConfig.maxRetries;
+      const baseDelayMs = options.retryBaseDelayMsOverride ?? 700;
 
-    parts.push({ text: userPrompt });
+      let response: any = null;
+      let successfulModel = "";
+      let lastAiStatus: AiAnalysisStatus = "UNAVAILABLE";
+      let lastAdvisory = ADVISORY_AI_UNAVAILABLE;
 
-    // Multi-model failover cascade using supported active Gemini models
-    const MODEL_CANDIDATES = [
-      {
-        name: "gemini-4-hydrogen",
-        timeoutMs: 18000,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: "application/json",
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
-        }
-      },
-      {
-        name: "gemini-3.1-flash-lite",
-        timeoutMs: 15000,
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: "application/json",
-          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
-        }
-      }
-    ];
+      for (const modelName of candidateModels) {
+        const thinkingLevel = modelName === "gemini-3.1-flash-lite" ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW;
+        const maxAttemptsFor503 = Math.max(1, Math.min(3, maxRetries)) + 1; // 1 initial + up to maxRetries retries on 503
+        let stopAllCandidates = false;
 
-    let response: any = null;
-    let successfulModel = "";
-    const candidateErrors: string[] = [];
+        for (let attempt = 0; attempt < maxAttemptsFor503; attempt++) {
+          let timerId: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const timeoutPromise = new Promise((_, reject) => {
+              timerId = setTimeout(
+                () => reject(new Error(`Model ${modelName} timed out after ${runtimeConfig.timeoutMs}ms`)),
+                runtimeConfig.timeoutMs
+              );
+            });
 
-    for (const candidate of MODEL_CANDIDATES) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const timeoutMs = candidate.timeoutMs;
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`Model ${candidate.name} call timed out after ${timeoutMs}ms`)), timeoutMs)
-          );
+            const callPromise = client.models.generateContent({
+              model: modelName,
+              contents: { parts },
+              config: {
+                systemInstruction: systemPrompt,
+                responseMimeType: "application/json",
+                thinkingConfig: { thinkingLevel },
+              },
+            });
 
-          const callPromise = client.models.generateContent({
-            model: candidate.name,
-            contents: { parts },
-            config: candidate.config,
-          });
+            const res: any = await Promise.race([callPromise, timeoutPromise]);
+            if (timerId) clearTimeout(timerId);
 
-          const res: any = await Promise.race([callPromise, timeoutPromise]);
-          if (res && res.text) {
-            response = res;
-            successfulModel = candidate.name;
+            if (res && res.text) {
+              response = res;
+              successfulModel = modelName;
+              recordModelSuccess(modelName);
+              break;
+            }
+            recordModelFailure(modelName, {
+              category: "UNKNOWN",
+              retryable: false,
+              dailyExhausted: false,
+              safeReason: "Empty model response",
+            });
+            break;
+          } catch (err: any) {
+            if (timerId) clearTimeout(timerId);
+            const classified = classifyGeminiError(err);
+
+            if (classified.category === "SERVICE_UNAVAILABLE" && attempt < maxAttemptsFor503 - 1) {
+              const backoffMs = baseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 250);
+              console.log(
+                `[LegalMetrix Vision] Model ${modelName} transient unavailability; retry ${attempt + 1}/${maxAttemptsFor503 - 1} in ${backoffMs}ms.`
+              );
+              await new Promise((r) => setTimeout(r, backoffMs));
+              continue;
+            }
+
+            recordModelFailure(modelName, classified);
+            console.log(
+              `[LegalMetrix Vision] Model ${modelName} skipped (${classified.category}): ${classified.safeReason}`
+            );
+
+            if (classified.category === "CONFIG_OR_AUTH_ERROR") {
+              lastAiStatus = "CONFIG_ERROR";
+              lastAdvisory = ADVISORY_AI_CONFIG_ERROR;
+              stopAllCandidates = true;
+            } else {
+              lastAiStatus = "UNAVAILABLE";
+              lastAdvisory = ADVISORY_AI_UNAVAILABLE;
+            }
             break;
           }
-          candidateErrors.push(`${candidate.name}: empty text response`);
-          break;
-        } catch (err: any) {
-          const msg = err?.message || String(err);
-          const isTransient = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429');
-          if (isTransient && attempt === 0) {
-            const backoffMs = 1400 + Math.floor(Math.random() * 600);
-            console.log(`[LegalMetrix Vision] Model ${candidate.name} transient load spike; retrying in ${backoffMs}ms...`);
-            await new Promise((r) => setTimeout(r, backoffMs));
-            continue;
-          }
-          console.log(`[LegalMetrix Vision] Model ${candidate.name} unavailable or high demand; advancing cascade:`, msg);
-          candidateErrors.push(`${candidate.name}: ${msg}`);
-          break;
         }
+
+        if ((response && response.text) || stopAllCandidates) break;
       }
-      if (response && response.text) break;
-    }
 
-    if (!response || !response.text) {
-      const errorDetail = candidateErrors.join(' | ');
-      if (!allowFallback) {
-        throw new Error(`Cloud vision models temporarily busy (503). Please retry front-panel OCR recalibration shortly.${errorDetail ? ` [${errorDetail}]` : ''}`);
+      if (!response || !response.text) {
+        return generateFallbackExtraction(
+          images,
+          category,
+          metadata,
+          preprocessedImages,
+          options.localOcr,
+          lastAiStatus,
+          lastAdvisory
+        );
       }
-      console.log("[LegalMetrix Vision] Cloud vision models busy; recording custody evidence for officer inspection.", errorDetail);
-      return generateFallbackExtraction(images, category, metadata, preprocessedImages);
-    }
 
-    let parsed: any;
-    try {
-      const cleanedJson = cleanJsonText(response.text);
-      parsed = JSON.parse(cleanedJson);
-    } catch (parseErr: any) {
-      if (!allowFallback) throw new Error("Gemini returned invalid front-panel OCR data.", { cause: parseErr });
-      console.log("[LegalMetrix Vision] Failed to parse vision JSON output; queuing manual review:", parseErr?.message || parseErr);
-      return generateFallbackExtraction(images, category, metadata, preprocessedImages);
-    }
+      let parsed: any;
+      try {
+        const cleanedJson = cleanJsonText(response.text);
+        parsed = JSON.parse(cleanedJson);
+      } catch (parseErr: any) {
+        console.log(
+          "[LegalMetrix Vision] Failed to parse Gemini JSON output; preserving local OCR declarations:",
+          parseErr?.message || parseErr
+        );
+        return generateFallbackExtraction(
+          images,
+          category,
+          metadata,
+          preprocessedImages,
+          options.localOcr,
+          "UNAVAILABLE",
+          ADVISORY_AI_UNAVAILABLE
+        );
+      }
 
-    let isPackageDetected = parsed.is_package_detected !== false;
-    const hasAnyFoundDeclarations = (parsed.declarations || []).some((d: any) => d.found && d.original_text && d.original_text.trim().length > 0);
-    const hasProductInfo = !!(parsed.product?.name && !parsed.product.name.toLowerCase().includes('non-packaged'));
-    if (!isPackageDetected && (hasAnyFoundDeclarations || hasProductInfo || (metadata?.productName && metadata.productName !== 'Packaged Commodity'))) {
-      isPackageDetected = true;
-    }
+      let isPackageDetected = parsed.is_package_detected !== false;
+      const hasAnyFoundDeclarations = (parsed.declarations || []).some(
+        (d: any) => d.found && d.original_text && d.original_text.trim().length > 0
+      );
+      const hasProductInfo = !!(typeof parsed.product?.name === 'string' && !parsed.product.name.toLowerCase().includes("non-packaged"));
+      if (
+        !isPackageDetected &&
+        (hasAnyFoundDeclarations ||
+          hasProductInfo ||
+          (options.localOcr?.declarations?.length || 0) > 0 ||
+          (metadata?.productName && metadata.productName !== "Packaged Commodity"))
+      ) {
+        isPackageDetected = true;
+      }
 
-    // Normalize declarations with strict multi-image attribution
-    const backImg = images.find(
-      (img) => img.type?.trim().toLowerCase() === "back" || img.id?.toLowerCase().includes("back")
-    );
-    const frontImg =
-      images.find(
-        (img) => img.type?.trim().toLowerCase() === "front" || img.id?.toLowerCase().includes("front")
-      ) || images[0];
+      const backImg = images.find(
+        (img) => img.type?.trim().toLowerCase() === "back" || img.id?.toLowerCase().includes("back")
+      );
+      const frontImg =
+        images.find((img) => img.type?.trim().toLowerCase() === "front" || img.id?.toLowerCase().includes("front")) ||
+        images[0];
 
-    const normalizedDeclarations: ExtractedDeclaration[] = (parsed.declarations || []).map(
-      (decl: any, index: number) => {
-        // 1. Match by explicit image_id
+      const geminiDeclarations: ExtractedDeclaration[] = (parsed.declarations || []).map((decl: any, index: number) => {
         let targetImg: InspectionImage | undefined = undefined;
-        if (decl.image_id) {
-          targetImg = images.find((img) => img.id === decl.image_id);
-        }
-
-        // 2. Match by image_index
+        if (decl.image_id) targetImg = images.find((img) => img.id === decl.image_id);
         if (!targetImg && typeof decl.image_index === "number" && images[decl.image_index]) {
           targetImg = images[decl.image_index];
         }
-
-        // 3. Match by image_type
         if (!targetImg && decl.image_type) {
-          targetImg = images.find(
-            (img) => img.type?.trim().toLowerCase() === decl.image_type?.trim().toLowerCase()
-          );
+          targetImg = images.find((img) => img.type?.trim().toLowerCase() === decl.image_type?.trim().toLowerCase());
         }
 
-        // 4. Strict cross-image hallucination guard:
-        // Packaging statutory fields (manufacturer, consumer care, barcode, expiry/best before, batch)
-        // are physically printed on the back panel. If a back image exists, ensure they are attributed
-        // to the back image so bounding boxes are not drawn erroneously over the front of the pack!
         const isBackPanelField = [
           "manufacturer_name",
           "packer_name",
@@ -524,8 +714,14 @@ CRITICAL:
           }
         }
 
-        // 5. Front-panel fields belong to front image
-        const isFrontPanelField = ["product_name", "brand", "brand_name", "sub_brand", "front_claims", "veg_non_veg"].includes(decl.field);
+        const isFrontPanelField = [
+          "product_name",
+          "brand",
+          "brand_name",
+          "sub_brand",
+          "front_claims",
+          "veg_non_veg",
+        ].includes(decl.field);
         if (frontImg && isFrontPanelField && (!targetImg || targetImg.id === backImg?.id)) {
           targetImg = frontImg;
         }
@@ -536,26 +732,33 @@ CRITICAL:
 
         let normVal = decl.original_text || "";
         if (decl.found && decl.original_text) {
-          if (decl.field === "mrp") {
-            normVal = normalizeMRP(decl.original_text).normalized;
-          } else if (decl.field === "net_quantity") {
-            normVal = normalizeNetQuantity(decl.original_text).normalized;
-          } else if (decl.field === "mfg_date" || decl.field === "best_before") {
+          if (decl.field === "mrp") normVal = normalizeMRP(decl.original_text).normalized;
+          else if (decl.field === "net_quantity") normVal = normalizeNetQuantity(decl.original_text).normalized;
+          else if (decl.field === "mfg_date" || decl.field === "best_before")
             normVal = normalizeDate(decl.original_text).normalized;
-          } else if (decl.field === "consumer_care_phone") {
-            normVal = normalizePhone(decl.original_text);
-          } else if (decl.field === "consumer_care_email") {
-            normVal = normalizeEmail(decl.original_text);
-          }
+          else if (decl.field === "consumer_care_phone") normVal = normalizePhone(decl.original_text);
+          else if (decl.field === "consumer_care_email") normVal = normalizeEmail(decl.original_text);
         }
 
-        const rawConf = typeof decl.confidence === "number" ? (decl.confidence > 1 ? decl.confidence / 100 : decl.confidence) : 0.85;
+        const rawConf =
+          typeof decl.confidence === "number" ? (decl.confidence > 1 ? decl.confidence / 100 : decl.confidence) : 0.85;
         let statusVal: DeclarationStatus = "FOUND";
         if (!decl.found || !isPackageDetected) {
           statusVal = "NOT_FOUND";
-        } else if (rawConf < 0.70 || decl.status === "UNCERTAIN") {
+        } else if (rawConf < 0.7 || decl.status === "UNCERTAIN") {
           statusVal = "UNCERTAIN";
         }
+
+        const rawField = typeof decl.field === "string" ? decl.field.trim().toLowerCase() : "";
+        const canonicalField =
+          rawField === "brand" || rawField === "trademark" || rawField === "brand_owner"
+            ? "brand_name"
+            : rawField === "commodity" ||
+              rawField === "commodity_name" ||
+              rawField === "generic_name" ||
+              rawField === "product"
+            ? "product_name"
+            : rawField;
 
         const rawBox = decl.box_2d ?? decl.bbox ?? decl.bounds;
         const isFromBox2d = Array.isArray(decl.box_2d) && decl.box_2d.length >= 4;
@@ -563,8 +766,8 @@ CRITICAL:
 
         return {
           id: `decl-${index + 1}`,
-          field: decl.field,
-          label: decl.label || decl.field,
+          field: canonicalField || decl.field,
+          label: decl.label || canonicalField || decl.field,
           original_text: decl.original_text || "",
           original_script_text: decl.original_script_text,
           script: decl.script,
@@ -577,55 +780,187 @@ CRITICAL:
           image_id: targetImg.id,
           image_type: targetImg.type,
           bbox: normalizedBox,
-          box_2d: isFromBox2d ? decl.box_2d : (normalizedBox ? [Math.round(normalizedBox.ymin * 10), Math.round(normalizedBox.xmin * 10), Math.round(normalizedBox.ymax * 10), Math.round(normalizedBox.xmax * 10)] : undefined),
+          box_2d: normalizedBox
+            ? [
+                Math.round(normalizedBox.ymin * 10),
+                Math.round(normalizedBox.xmin * 10),
+                Math.round(normalizedBox.ymax * 10),
+                Math.round(normalizedBox.xmax * 10),
+              ]
+            : undefined,
         };
-      }
-    );
+      });
 
-    return {
-      is_package_detected: isPackageDetected,
-      product: {
-        name: parsed.product?.name || metadata?.productName || (isPackageDetected ? "Inspected Packaged Item" : "Non-Packaged Commodity"),
-        brand: parsed.product?.brand || metadata?.brand || (isPackageDetected ? "Packaged Brand" : "N/A"),
-        category: parsed.product?.category || category,
-      },
-      declarations: normalizedDeclarations,
-      image_quality: {
-        overall: (parsed.image_quality?.overall as "GOOD" | "FAIR" | "POOR") || "GOOD",
-        issues: parsed.image_quality?.issues || [],
-      },
-      warnings: parsed.warnings || (isPackageDetected ? [] : ["No retail packaged commodity or statutory declarations detected in image"]),
-      ai_notes: parsed.ai_notes || `Real-time multimodal screening executed with ${successfulModel}.`,
-      is_fallback: false,
-      preprocessed_images: preprocessedImages,
-    };
-  } catch (error: any) {
-    if (!allowFallback) throw error;
-    console.log("[LegalMetrix Vision] Cloud vision request failed; engaging custody fallback:", error?.message || error);
-    return generateFallbackExtraction(images, category, metadata, preprocessedImages);
+      // Ensure brand identified in parsed.product.brand isn't replaced by a noisy local OCR fragment
+      const parsedBrand = typeof parsed.product?.brand === "string" ? parsed.product.brand.trim() : "";
+      const hasValidParsedBrand =
+        Boolean(parsedBrand) && !/^(?:packaged brand|unspecified brand|n\/a|unknown)$/i.test(parsedBrand);
+      if (hasValidParsedBrand && !geminiDeclarations.some((d) => d.field === "brand_name" && d.found)) {
+        const brandDecl: ExtractedDeclaration = {
+          id: `decl-brand-${geminiDeclarations.length + 1}`,
+          field: "brand_name",
+          label: "Brand Name / Trademark",
+          original_text: parsedBrand,
+          normalized_value: parsedBrand,
+          found: isPackageDetected,
+          status: isPackageDetected ? "FOUND" : "NOT_FOUND",
+          confidence: 0.9,
+          image_id: frontImg?.id || images[0]?.id || "img-0",
+          image_type: frontImg?.type || "Front",
+        };
+        const snappedBrand = snapDeclarationToLocalOcrBox(brandDecl, options.localOcr?.panels);
+        if (snappedBrand) {
+          brandDecl.bbox = snappedBrand.bbox;
+          brandDecl.box_2d = snappedBrand.box_2d;
+        }
+        geminiDeclarations.push(brandDecl);
+      }
+
+      // Merge local OCR declarations with Gemini output so local pixel-accurate boxes are never clobbered
+      const localDecls = options.localOcr?.declarations || [];
+      const mergedDeclarations = mergeLocalAndGeminiDeclarations(
+        localDecls,
+        geminiDeclarations,
+        options.localOcr?.panels
+      );
+
+      const finalResult: MultimodalAnalysisResult = {
+        is_package_detected: isPackageDetected,
+        product: {
+          name:
+            parsed.product?.name ||
+            metadata?.productName ||
+            (isPackageDetected ? "Inspected Packaged Item" : "Non-Packaged Commodity"),
+          brand: parsed.product?.brand || metadata?.brand || (isPackageDetected ? "Packaged Brand" : "N/A"),
+          category: parsed.product?.category || category,
+        },
+        declarations: mergedDeclarations,
+        image_quality: {
+          overall: (parsed.image_quality?.overall as "GOOD" | "FAIR" | "POOR") || "GOOD",
+          issues: parsed.image_quality?.issues || [],
+        },
+        warnings:
+          parsed.warnings ||
+          (isPackageDetected ? [] : ["No retail packaged commodity or statutory declarations detected in image"]),
+        ai_notes: parsed.ai_notes || `Hybrid screening completed using local OCR and ${successfulModel}.`,
+        is_fallback: false,
+        ocr_completed: Boolean(options.localOcr?.panels?.length || localDecls.length),
+        ai_assisted_completed: true,
+        ai_status: "COMPLETED",
+        ai_model_used: successfulModel,
+        ocr_panels: options.localOcr?.panels,
+        preprocessed_images: preprocessedImages,
+      };
+
+      if (options.requestCacheKey) {
+        setCachedAnalysisResponse(options.requestCacheKey, finalResult);
+      }
+      return finalResult;
+    } catch (error: any) {
+      const classified = classifyGeminiError(error);
+      const aiStatus: AiAnalysisStatus =
+        classified.category === "CONFIG_OR_AUTH_ERROR" ? "CONFIG_ERROR" : "UNAVAILABLE";
+      const advisory =
+        classified.category === "CONFIG_OR_AUTH_ERROR" ? ADVISORY_AI_CONFIG_ERROR : ADVISORY_AI_UNAVAILABLE;
+
+      console.log("[LegalMetrix Vision] Engaging resilient local OCR fallback:", classified.safeReason);
+      return generateFallbackExtraction(
+        images,
+        category,
+        metadata,
+        preprocessedImages,
+        options.localOcr,
+        aiStatus,
+        advisory
+      );
+    }
+  };
+
+  const promise = execute();
+  if (options.requestCacheKey) {
+    setInFlightAnalysis(options.requestCacheKey, promise);
   }
+  return promise;
 }
 
 export function generateFallbackExtraction(
   images: InspectionImage[],
   category: ProductCategory,
   metadata?: { productName?: string; brand?: string; barcode?: string; demoPresetId?: string },
-  preprocessedImages?: MultimodalAnalysisResult["preprocessed_images"]
+  preprocessedImages?: MultimodalAnalysisResult["preprocessed_images"],
+  localOcr?: LocalOcrContext,
+  aiStatus: AiAnalysisStatus = "UNAVAILABLE",
+  advisoryMessage: string = ADVISORY_AI_UNAVAILABLE
 ): MultimodalAnalysisResult {
   const demoPresetId = metadata?.demoPresetId || images.find((image) => image.demo_preset_id)?.demo_preset_id;
   const demoProfile = getDemoFallbackExtraction(demoPresetId, images);
   if (demoProfile) {
     return {
       ...demoProfile,
+      ocr_completed: true,
+      ai_assisted_completed: false,
+      ai_status: "DEMO_PRESET",
       preprocessed_images: preprocessedImages || demoProfile.preprocessed_images,
     };
   }
 
-  const frontImg = images.find((i) => i.type === "Front") || images[0] || { id: "img-front", type: "Front", url: "", name: "" };
+  // 1. Local OCR & Deterministic Rule-Based Extraction (Primary non-Gemini source)
+  const panels = localOcr?.panels || [];
+  const hasLocalPanelText = panels.some((p) => (p.text || "").trim().length > 0);
+  let resolvedDeclarations = localOcr?.declarations ? [...localOcr.declarations] : [];
+  let inferredName: string | undefined;
+  let inferredBrand: string | undefined;
+  let localWarnings: string[] = [];
+
+  if (resolvedDeclarations.length === 0 && hasLocalPanelText) {
+    const parsed = extractDeclarationsFromOcrPanels(panels, {
+      productHint: metadata?.productName,
+      brandHint: metadata?.brand,
+      barcodeHint: metadata?.barcode,
+    });
+    resolvedDeclarations = parsed.declarations;
+    inferredName = parsed.inferredProduct.name;
+    inferredBrand = parsed.inferredProduct.brand;
+    localWarnings = parsed.warnings;
+  } else if (resolvedDeclarations.length > 0) {
+    inferredName = resolvedDeclarations.find((d) => d.field === "product_name")?.normalized_value;
+    inferredBrand = resolvedDeclarations.find((d) => d.field === "brand_name")?.normalized_value;
+  }
+
+  if (resolvedDeclarations.length > 0 || hasLocalPanelText) {
+    const prodName = metadata?.productName?.trim() || inferredName || "Scanned Packaged Commodity";
+    const brandName = metadata?.brand?.trim() || inferredBrand || "Unspecified Brand";
+    const quality = deriveImageQualityFromInputs(images, panels, hasLocalPanelText);
+
+    return {
+      is_package_detected: true,
+      product: {
+        name: prodName,
+        brand: brandName,
+        category,
+      },
+      declarations: resolvedDeclarations,
+      image_quality: quality,
+      warnings: Array.from(new Set([...localWarnings])),
+      ai_notes:
+        aiStatus === "SKIPPED"
+          ? "Local Tesseract.js OCR extraction and deterministic Legal Metrology validation completed."
+          : "Local Tesseract.js OCR extraction and deterministic Legal Metrology validation completed while AI enhancement was unavailable.",
+      is_fallback: true,
+      ocr_completed: true,
+      ai_assisted_completed: false,
+      ai_status: aiStatus,
+      advisory_message: advisoryMessage,
+      ocr_panels: panels,
+      preprocessed_images: preprocessedImages,
+    };
+  }
+
+  // 2. Last-resort manual inspection template when neither local OCR text nor Gemini was available
+  const frontImg =
+    images.find((i) => i.type === "Front") || images[0] || { id: "img-front", type: "Front", url: "", name: "" };
   const backImg = images.find((i) => i.type === "Back") || images[1] || frontImg;
 
-  // 2. REAL USER PHOTO / CAMERA CAPTURE (AI Service offline or busy)
-  // NEVER fabricate fake passes or fake cookies! Be honest and mark declarations for manual officer verification.
   const prodName = metadata?.productName?.trim() || "Captured Commodity";
   const brandName = metadata?.brand?.trim() || "Unspecified Brand";
 
@@ -641,7 +976,7 @@ export function generateFallbackExtraction(
       confidence: metadata?.productName ? 0.85 : 0.25,
       image_id: frontImg.id,
       image_type: frontImg.type,
-      notes: "Auto-extracted from inspection form metadata. Visual AI extraction offline."
+      notes: "Metadata entry pending visual label verification.",
     },
     {
       id: "decl-2",
@@ -654,7 +989,7 @@ export function generateFallbackExtraction(
       confidence: 0.0,
       image_id: frontImg.id,
       image_type: frontImg.type,
-      notes: "Could not be automatically verified from photo. Officer manual review required."
+      notes: "Could not be automatically verified from image. Officer manual review required.",
     },
     {
       id: "decl-3",
@@ -667,7 +1002,7 @@ export function generateFallbackExtraction(
       confidence: 0.0,
       image_id: backImg.id,
       image_type: backImg.type,
-      notes: "Could not be automatically verified from photo. Officer manual review required."
+      notes: "Could not be automatically verified from image. Officer manual review required.",
     },
     {
       id: "decl-4",
@@ -677,10 +1012,10 @@ export function generateFallbackExtraction(
       normalized_value: metadata?.brand || "",
       found: !!metadata?.brand,
       status: metadata?.brand ? "UNCERTAIN" : "NOT_FOUND",
-      confidence: metadata?.brand ? 0.60 : 0.0,
+      confidence: metadata?.brand ? 0.55 : 0.0,
       image_id: backImg.id,
       image_type: backImg.type,
-      notes: "Full postal address required under Rule 6(1)(a)."
+      notes: "Full postal address required under Rule 6(1)(a).",
     },
     {
       id: "decl-5",
@@ -692,7 +1027,7 @@ export function generateFallbackExtraction(
       status: "NOT_FOUND",
       confidence: 0.0,
       image_id: backImg.id,
-      image_type: backImg.type
+      image_type: backImg.type,
     },
     {
       id: "decl-6",
@@ -704,7 +1039,7 @@ export function generateFallbackExtraction(
       status: "NOT_FOUND",
       confidence: 0.0,
       image_id: backImg.id,
-      image_type: backImg.type
+      image_type: backImg.type,
     },
     {
       id: "decl-7",
@@ -716,8 +1051,8 @@ export function generateFallbackExtraction(
       status: "NOT_FOUND",
       confidence: 0.0,
       image_id: backImg.id,
-      image_type: backImg.type
-    }
+      image_type: backImg.type,
+    },
   ];
 
   return {
@@ -728,49 +1063,74 @@ export function generateFallbackExtraction(
       category,
     },
     declarations,
-    image_quality: {
-      overall: "FAIR",
-      issues: ["Live vision extraction service was unreachable. Declarations require manual officer verification."],
-    },
+    image_quality: deriveImageQualityFromInputs(images, panels, false),
     warnings: [
-      "AI vision service was offline during scan. Mandatory declarations could not be extracted automatically.",
-      "Statutory declarations marked as NOT_FOUND pending manual physical review."
+      "No machine-readable text could be extracted automatically from the uploaded image.",
+      "Declarations flagged for manual physical verification.",
     ],
     ai_notes:
       "Image capture recorded in secure chain of custody. Mandatory declarations pending officer physical inspection.",
     is_fallback: true,
+    ocr_completed: false,
+    ai_assisted_completed: false,
+    ai_status: aiStatus,
+    advisory_message: advisoryMessage,
     preprocessed_images: preprocessedImages,
   };
 }
 
+export interface FrontRecalibrationResult {
+  declarations: ExtractedDeclaration[];
+  ai_status: AiAnalysisStatus;
+  ai_assisted_completed: boolean;
+  advisory_message?: string;
+  ai_model_used?: string;
+}
+
 /**
- * Specialized Front Panel OCR Recalibration Engine
- * Re-scans the front package image with high sensitivity for Principal Display Panel (PDP) declarations:
- * - Brand Name / Registered Trademark
- * - Generic / Common Commodity Name
- * - Sub-brand / Variant
- * - Dietary Classification Symbol (100% Vegetarian Green Dot / Non-Veg)
- * - Front Statutory / Nutritional Claims
- * - Net Quantity (if visible on front PDP)
+ * Specialized Front Panel OCR Recalibration Engine.
+ * Uses local OCR + Gemini enhancement when healthy, and falls back gracefully without failing on 429/503.
  */
 export async function recalibrateFrontOcr(
   frontImage: InspectionImage,
-  metadata?: { productName?: string; brand?: string; category?: ProductCategory; barcode?: string; demoPresetId?: string }
-): Promise<ExtractedDeclaration[]> {
+  metadata?: {
+    productName?: string;
+    brand?: string;
+    category?: ProductCategory;
+    barcode?: string;
+    demoPresetId?: string;
+    localOcr?: LocalOcrContext;
+  }
+): Promise<FrontRecalibrationResult> {
   const demoPresetId = metadata?.demoPresetId || frontImage.demo_preset_id;
-  if (demoPresetId) {
-    if (!isDemoPresetId(demoPresetId)) throw new Error(`Unknown demo preset: ${demoPresetId}`);
+  if (demoPresetId && isDemoPresetId(demoPresetId)) {
     const presetDeclarations = getDemoFrontRecalibration(demoPresetId, frontImage);
-    if (presetDeclarations) return presetDeclarations;
+    if (presetDeclarations) {
+      return {
+        declarations: presetDeclarations,
+        ai_status: "DEMO_PRESET",
+        ai_assisted_completed: false,
+      };
+    }
   }
 
-  const liveResult = await analyzePackageImagesWithGemini(
+  const result = await analyzePackageImagesWithGemini(
     [frontImage],
-    metadata?.category || 'Food',
+    metadata?.category || "Food",
     { productName: metadata?.productName, brand: metadata?.brand, barcode: metadata?.barcode },
-    false
+    {
+      allowFallback: true,
+      localOcr: metadata?.localOcr,
+    }
   );
-  return liveResult.declarations.filter(
-    (declaration) => declaration.image_id === frontImage.id || declaration.image_type === 'Front'
-  );
+
+  return {
+    declarations: result.declarations.filter(
+      (declaration) => declaration.image_id === frontImage.id || declaration.image_type === "Front"
+    ),
+    ai_status: result.ai_status,
+    ai_assisted_completed: result.ai_assisted_completed,
+    advisory_message: result.advisory_message,
+    ai_model_used: result.ai_model_used,
+  };
 }

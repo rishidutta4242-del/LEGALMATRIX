@@ -53,7 +53,7 @@ export const SCHEDULE_II_STANDARDS: ScheduleIITableRow[] = [
  * Returns required statutory minimum character height in millimeters for a given net quantity string or gram/ml value.
  */
 export function getStatutoryMinHeight(netQuantityStr: string, isBlownMoulded: boolean = false): number {
-  if (!netQuantityStr) return isBlownMoulded ? 4.0 : 2.0;
+  if (!netQuantityStr || typeof netQuantityStr !== 'string') return isBlownMoulded ? 4.0 : 2.0;
 
   const lower = netQuantityStr.toLowerCase();
   // Extract numerical value and unit
@@ -61,7 +61,7 @@ export function getStatutoryMinHeight(netQuantityStr: string, isBlownMoulded: bo
   if (!match) return isBlownMoulded ? 4.0 : 2.0;
 
   const value = parseFloat(match[1]);
-  const unit = match[2].toLowerCase();
+  const unit = (match[2] || '').toLowerCase();
 
   let gramsEquivalent = value;
   if (unit === 'kg' || unit === 'l' || unit === 'ltr' || unit === 'liter' || unit === 'litre') {

@@ -804,13 +804,14 @@ export const PREDEFINED_DEMO_PACKAGES: DemoPackagePreset[] = [
 
 // Helper to look up demo preset by id or fuzzy name
 export function findDemoPackage(idOrName: string): DemoPackagePreset | undefined {
-  const query = idOrName.toLowerCase().trim();
+  const query = typeof idOrName === 'string' ? idOrName.toLowerCase().trim() : '';
+  if (!query) return undefined;
   return PREDEFINED_DEMO_PACKAGES.find(
     (pkg) =>
-      pkg.id.toLowerCase() === query ||
-      pkg.productName.toLowerCase().includes(query) ||
-      pkg.title.toLowerCase().includes(query) ||
-      pkg.brand.toLowerCase().includes(query)
+      (pkg?.id || '').toLowerCase() === query ||
+      (pkg?.productName || '').toLowerCase().includes(query) ||
+      (pkg?.title || '').toLowerCase().includes(query) ||
+      (pkg?.brand || '').toLowerCase().includes(query)
   );
 }
 

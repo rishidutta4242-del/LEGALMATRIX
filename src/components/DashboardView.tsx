@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { fetchDashboardStats, fetchManufacturerRiskProfiles } from '../services/api';
+import { fetchManufacturerRiskProfiles } from '../services/api';
+import { cacheDashboardSnapshot, getCachedDashboardSnapshot } from '../utils/inspectionCache';
 import { DashboardStats, ManufacturerRiskProfile } from '../types/index';
 import {
   ShieldAlert,
@@ -37,6 +38,7 @@ export const DashboardView: React.FC = () => {
   const [riskProfiles, setRiskProfiles] = useState<ManufacturerRiskProfile[]>([]);
   const [riskFilter, setRiskFilter] = useState<'ALL' | 'CRITICAL' | 'ELEVATED' | 'MODERATE' | 'LOW'>('ALL');
   const [loading, setLoading] = useState<boolean>(true);
+  const [servingFromCache, setServingFromCache] = useState<boolean>(false);
   const [filterText, setFilterText] = useState<string>('');
 
   useEffect(() => {
@@ -44,16 +46,33 @@ export const DashboardView: React.FC = () => {
   }, []);
 
   const loadStats = async () => {
-    try {
+    // Instant IndexedDB hydration for recent scans and metrics
+    const cached = await getCachedDashboardSnapshot().catch(() => ({ stats: null, riskProfiles: [] }));
+    if (cached.stats) {
+      setStats(cached.stats);
+      if (cached.riskProfiles.length > 0) setRiskProfiles(cached.riskProfiles);
+      setLoading(false);
+    } else {
       setLoading(true);
-      const [statsData, riskData] = await Promise.all([
-        fetchDashboardStats(),
-        fetchManufacturerRiskProfiles(90).catch(() => [])
+    }
+
+    try {
+      const [dashRes, riskData] = await Promise.all([
+        fetch('/api/dashboard').then(async (r) => {
+          if (!r.ok) throw new Error('Dashboard endpoint unavailable');
+          return (await r.json()) as DashboardStats;
+        }),
+        fetchManufacturerRiskProfiles(90).catch(() => cached.riskProfiles || [])
       ]);
-      setStats(statsData);
+      setStats(dashRes);
       setRiskProfiles(riskData);
+      setServingFromCache(false);
+      void cacheDashboardSnapshot(dashRes, riskData);
     } catch (err) {
-      console.error('Failed to load dashboard statistics:', err);
+      if (cached.stats) {
+        setServingFromCache(true);
+      }
+      console.warn('Dashboard serving cached IndexedDB snapshot:', err);
     } finally {
       setLoading(false);
     }
@@ -118,16 +137,35 @@ export const DashboardView: React.FC = () => {
     );
   }
 
-  const filteredInspections = stats.recent_inspections.filter(
+  const qFilter = (filterText || '').toLowerCase();
+  const filteredInspections = (stats.recent_inspections || []).filter(
     (ins) =>
-      ins.product_name.toLowerCase().includes(filterText.toLowerCase()) ||
-      ins.id.toLowerCase().includes(filterText.toLowerCase()) ||
-      ins.brand.toLowerCase().includes(filterText.toLowerCase()) ||
-      ins.officer_name.toLowerCase().includes(filterText.toLowerCase())
+      (ins?.product_name || '').toLowerCase().includes(qFilter) ||
+      (ins?.id || '').toLowerCase().includes(qFilter) ||
+      (ins?.brand || '').toLowerCase().includes(qFilter) ||
+      (ins?.officer_name || '').toLowerCase().includes(qFilter)
   );
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8 max-w-7xl mx-auto">
+      {servingFromCache && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs text-amber-900">
+          <div className="flex items-center space-x-2">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+            <span>
+              Backend API unreachable — displaying cached recent inspection results from browser IndexedDB.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={loadStats}
+            className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 text-amber-800 font-semibold hover:bg-amber-100 transition shrink-0 cursor-pointer"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
+
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -523,7 +561,7 @@ export const DashboardView: React.FC = () => {
             <tbody className="divide-y divide-slate-100 text-xs">
               {riskProfiles
                 .filter((p) => (riskFilter === 'ALL' ? true : p.risk_level === riskFilter))
-                .filter((p) => !filterText || p.brand_or_mfr.toLowerCase().includes(filterText.toLowerCase()))
+                .filter((p) => !filterText || (p?.brand_or_mfr || '').toLowerCase().includes((filterText || '').toLowerCase()))
                 .length === 0 ? (
                 <tr>
                   <td colSpan={8} className="p-8 text-center text-slate-400 text-xs">
@@ -533,7 +571,7 @@ export const DashboardView: React.FC = () => {
               ) : (
                 riskProfiles
                   .filter((p) => (riskFilter === 'ALL' ? true : p.risk_level === riskFilter))
-                  .filter((p) => !filterText || p.brand_or_mfr.toLowerCase().includes(filterText.toLowerCase()))
+                  .filter((p) => !filterText || (p?.brand_or_mfr || '').toLowerCase().includes((filterText || '').toLowerCase()))
                   .map((p, idx) => {
                     const badgeClasses =
                       p.risk_level === 'CRITICAL'

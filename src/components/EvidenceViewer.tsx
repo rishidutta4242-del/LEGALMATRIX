@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { verifyInspection, recalibrateFrontOcrApi } from '../services/api';
+import { verifyInspection, recalibrateFrontOcrApi, calibrateBoxApi } from '../services/api';
+import { ExtractedDeclaration, ImageBoundingBox } from '../types/index';
+import { runTesseractOcrOnImage } from '../utils/tesseractOcr';
+import { extractDeclarationsFromOcrPanels } from '../utils/ocrFieldParser';
 import {
   ZoomIn,
   ZoomOut,
@@ -57,7 +60,11 @@ export function getShortFieldLabel(field: string, originalLabel: string): string
   return map[field] || originalLabel.split(' ')[0] || field;
 }
 
-function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number; xmin: number; ymax: number; xmax: number } | null {
+function normalizeBbox(
+  raw: any,
+  isExplicitBox2d = false,
+  isExplicitPctBbox = false
+): { ymin: number; xmin: number; ymax: number; xmax: number } | null {
   if (!raw) return null;
 
   let ymin = 0;
@@ -73,7 +80,7 @@ function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number; xmin:
       xmax = Number(raw[3]) || 0;
 
       if (isExplicitBox2d) {
-        // Gemini box_2d is strictly 0..1000 integer scale
+        // Gemini / Tesseract box_2d is strictly 0..1000 integer scale
         ymin = (ymin / 1000) * 100;
         xmin = (xmin / 1000) * 100;
         ymax = (ymax / 1000) * 100;
@@ -85,7 +92,7 @@ function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number; xmin:
           xmin = (xmin / 1000) * 100;
           ymax = (ymax / 1000) * 100;
           xmax = (xmax / 1000) * 100;
-        } else if (maxVal <= 1.0 && maxVal > 0) {
+        } else if (!isExplicitPctBbox && maxVal <= 1.0 && maxVal > 0) {
           ymin = ymin * 100;
           xmin = xmin * 100;
           ymax = ymax * 100;
@@ -111,7 +118,7 @@ function normalizeBbox(raw: any, isExplicitBox2d = false): { ymin: number; xmin:
       xmin = (xmin / 1000) * 100;
       ymax = (ymax / 1000) * 100;
       xmax = (xmax / 1000) * 100;
-    } else if (maxVal <= 1.0 && maxVal > 0) {
+    } else if (!isExplicitPctBbox && maxVal <= 1.0 && maxVal > 0) {
       ymin = ymin * 100;
       xmin = xmin * 100;
       ymax = ymax * 100;
@@ -189,7 +196,7 @@ export const EvidenceViewer: React.FC = () => {
   const isNoPackageDetected =
     currentInspection?.status === 'NO_PACKAGE_DETECTED' ||
     currentInspection?.is_package_detected === false ||
-    activeImage?.quality?.issues?.some((issue) => issue.toLowerCase().includes('no statutory package') || issue.toLowerCase().includes('no package'));
+    activeImage?.quality?.issues?.some((issue) => (issue || '').toLowerCase().includes('no statutory package') || (issue || '').toLowerCase().includes('no package'));
 
   // Auto switch active image when a user selects a declaration in the side list
   useEffect(() => {
@@ -203,7 +210,7 @@ export const EvidenceViewer: React.FC = () => {
     }
     if (targetIdx === -1 && decl.image_type) {
       targetIdx = currentInspection.images.findIndex(
-        (img) => img.type?.trim().toLowerCase() === decl.image_type?.trim().toLowerCase()
+        (img) => (img.type || '').trim().toLowerCase() === (decl.image_type || '').trim().toLowerCase()
       );
     }
     if (targetIdx === -1 && currentInspection.images.length > 1) {
@@ -268,8 +275,8 @@ export const EvidenceViewer: React.FC = () => {
 
       // If explicit image_type matches
       if (d.image_type && activeImage.type) {
-        const dType = d.image_type.trim().toLowerCase();
-        const aType = activeImage.type.trim().toLowerCase();
+        const dType = (d.image_type || '').trim().toLowerCase();
+        const aType = (activeImage.type || '').trim().toLowerCase();
         if (dType === aType) return true;
         if (dType !== aType && ['front', 'back'].includes(dType) && ['front', 'back'].includes(aType)) {
           return false;
@@ -303,7 +310,8 @@ export const EvidenceViewer: React.FC = () => {
       .map((decl, idx) => {
         const rawBox = decl.bbox ?? (decl as any).box_2d;
         const isBox2d = !decl.bbox && Array.isArray((decl as any).box_2d);
-        const bbox = normalizeBbox(rawBox, isBox2d);
+        const isPctBbox = Boolean(decl.bbox);
+        const bbox = normalizeBbox(rawBox, isBox2d, isPctBbox);
         if (!bbox) return null;
 
         const evalItem = currentInspection?.rule_evaluations?.find((r) => r.field === decl.field);
@@ -474,10 +482,42 @@ export const EvidenceViewer: React.FC = () => {
     if (!currentInspection) return;
     setIsRecalibrating(true);
     try {
-      const res = await recalibrateFrontOcrApi(currentInspection.id, officerName);
+      const frontImage =
+        currentInspection.images.find((img) => img.type?.toLowerCase() === 'front') ||
+        currentInspection.images[0];
+
+      let localOcrPayload: { panel: any; declarations: ExtractedDeclaration[] } | undefined = undefined;
+      if (frontImage && !frontImage.url.startsWith('data:image/svg+xml')) {
+        try {
+          const panel = await runTesseractOcrOnImage(frontImage);
+          const isGenericPlaceholder = (val?: string) =>
+            !val ||
+            /^(?:packaged\s*commodity|scanned\s*packaged\s*commodity|captured\s*commodity|unspecified\s*brand|unknown|n\/a)$/i.test(
+              val.trim()
+            );
+          const parsed = extractDeclarationsFromOcrPanels([panel], {
+            productHint: isGenericPlaceholder(currentInspection.product_name)
+              ? undefined
+              : currentInspection.product_name,
+            brandHint: isGenericPlaceholder(currentInspection.brand)
+              ? undefined
+              : currentInspection.brand,
+            barcodeHint: currentInspection.barcode,
+          });
+          localOcrPayload = { panel, declarations: parsed.declarations };
+        } catch (ocrErr) {
+          console.warn('Local Tesseract front recalibration warning:', ocrErr);
+        }
+      }
+
+      const res = await recalibrateFrontOcrApi(currentInspection.id, officerName, localOcrPayload);
       if (res.success && res.inspection) {
         setCurrentInspection(res.inspection);
-        showToast('Front Panel OCR recalibrated with precision bounding boxes!', 'success');
+        if (res.advisory_message && !res.ai_assisted_completed) {
+          showToast(`Front Panel local OCR recalibrated. ${res.advisory_message}`, 'info');
+        } else {
+          showToast('Front Panel OCR recalibrated with precision bounding boxes!', 'success');
+        }
         const frontIdx = res.inspection.images.findIndex((img) => img.type?.toLowerCase() === 'front');
         if (frontIdx >= 0) setActiveImageIndex(frontIdx);
       }
@@ -503,6 +543,7 @@ export const EvidenceViewer: React.FC = () => {
           if (idx === activeImageIndex) {
             return {
               ...img,
+              deskewAngleDeg: 0,
               preprocessed_url: data.data.preprocessed_url,
               thresholded_url: data.data.thresholded_url,
               preprocessing_steps: data.data.steps
@@ -719,6 +760,16 @@ export const EvidenceViewer: React.FC = () => {
                 <span>{reviewCount} Review</span>
               </span>
             )}
+            {currentInspection.analysis_meta?.ocr_completed && (
+              <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-200">
+                <span>OCR Completed</span>
+              </span>
+            )}
+            {currentInspection.analysis_meta && !currentInspection.analysis_meta.ai_assisted_completed && !currentInspection.demo_preset_id && (
+              <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-amber-50 text-amber-800 font-semibold border border-amber-200">
+                <span>Local OCR Mode</span>
+              </span>
+            )}
           </div>
         </div>
 
@@ -920,7 +971,11 @@ export const EvidenceViewer: React.FC = () => {
                   Backend Sharp Pipeline Active: {imageLayer === 'enhanced' ? 'Grayscale (BT.709) + Linear Contrast Boost (1.15) + Unsharp Mask' : 'Otsu Dynamic Thresholding (Binarized)'}
                 </span>
               </span>
-              <span className="text-[10px] text-amber-300/80">Gemini Multimodal Optical Enhancement</span>
+              <span className="text-[10px] text-amber-300/80">
+                {currentInspection.analysis_meta?.ai_assisted_completed
+                  ? 'Hybrid Local OCR + Gemini Enhancement'
+                  : 'Local OCR Optical Enhancement Layer'}
+              </span>
             </div>
           )}
 
@@ -933,7 +988,7 @@ export const EvidenceViewer: React.FC = () => {
               <img
                 src={displayedImageUrl}
                 alt={activeImage.name}
-                className="max-h-[500px] w-auto object-contain rounded-lg shadow-2xl border border-slate-700 block"
+                className="max-h-[500px] max-w-full w-auto h-auto rounded-lg shadow-2xl border border-slate-700 block select-none"
               />
 
               {/* CAD Leader Callout Lines for External Tags */}

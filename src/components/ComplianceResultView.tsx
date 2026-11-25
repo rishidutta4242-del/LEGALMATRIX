@@ -196,7 +196,13 @@ export const ComplianceResultView: React.FC = () => {
 
         {/* Quick Action Buttons */}
         <div className="flex flex-wrap items-center gap-2.5">
-          {(currentInspection.status === 'PASS' || existingCert || currentInspection.certificate_id || !currentInspection.rule_evaluations?.some(e => e.status === 'FAIL')) && (
+          {(currentInspection.status === 'PASS' ||
+            existingCert ||
+            currentInspection.certificate_id ||
+            (!currentInspection.rule_evaluations?.some(e => e.status === 'FAIL') &&
+              !currentInspection.analysis_meta?.manual_verification_required &&
+              currentInspection.status !== 'REVIEW' &&
+              currentInspection.status !== 'NO_PACKAGE_DETECTED')) && (
             <button
               id="btn-compliance-certificate"
               type="button"
@@ -275,6 +281,63 @@ export const ComplianceResultView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Non-blocking AI-Assisted Advisory & Pipeline Execution Status Strip */}
+      {(currentInspection.analysis_meta || currentInspection.data_source) && (
+        <div className="space-y-2.5">
+          {currentInspection.analysis_meta?.advisory_message && !currentInspection.analysis_meta?.ai_assisted_completed && (
+            <div className="bg-amber-50 border border-amber-300 rounded-xl px-4 py-2.5 text-xs text-amber-950 flex items-center space-x-2.5 shadow-2xs">
+              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+              <span className="font-medium">{currentInspection.analysis_meta.advisory_message}</span>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+            {(currentInspection.analysis_meta?.ocr_completed ?? true) && (
+              <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                <span>
+                  OCR Completed
+                  {typeof currentInspection.analysis_meta?.ocr_avg_confidence === 'number'
+                    ? ` (${Math.round(currentInspection.analysis_meta.ocr_avg_confidence * 100)}%)`
+                    : ''}
+                </span>
+              </span>
+            )}
+            {(currentInspection.analysis_meta?.rule_validation_completed ?? true) && (
+              <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Rule-Based Validation Completed</span>
+              </span>
+            )}
+            {currentInspection.analysis_meta?.ai_assisted_completed ? (
+              <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-200">
+                <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+                <span>
+                  AI-Assisted Analysis Completed
+                  {currentInspection.analysis_meta.ai_model_used ? ` (${currentInspection.analysis_meta.ai_model_used})` : ''}
+                </span>
+              </span>
+            ) : currentInspection.demo_preset_id ? (
+              <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-800 border border-indigo-200">
+                <Database className="h-3.5 w-3.5 text-indigo-600" />
+                <span>Calibrated Benchmark Mode</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800 border border-amber-200">
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                <span>AI-Assisted Analysis Unavailable</span>
+              </span>
+            )}
+            {(currentInspection.analysis_meta?.manual_verification_required || currentInspection.status === 'REVIEW') && (
+              <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300">
+                <UserCheck className="h-3.5 w-3.5 text-amber-700" />
+                <span>Manual Verification Required</span>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Main Overall Screening Status Banner */}
       <div className={`rounded-2xl p-6 border ${statusTheme.border} ${statusTheme.bg} shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-6`}>

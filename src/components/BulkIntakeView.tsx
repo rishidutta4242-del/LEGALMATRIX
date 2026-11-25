@@ -85,9 +85,9 @@ NutriFit California Roasted Almonds (30x 200g) | NutriFit Foods | Food | 1890456
 
   // Defensive CSV Parser
   const parseCSV = (text: string) => {
-    const lines = text
+    const lines = (text || '')
       .split(/\r?\n/)
-      .map((l) => l.trim())
+      .map((l) => (l || '').trim())
       .filter((l) => l.length > 0);
 
     if (lines.length <= 1) {
@@ -95,7 +95,7 @@ NutriFit California Roasted Almonds (30x 200g) | NutriFit Foods | Food | 1890456
       return;
     }
 
-    const rawHeaders = lines[0].split(',').map((h) => h.trim().toLowerCase().replace(/["']/g, ''));
+    const rawHeaders = lines[0].split(',').map((h) => (h || '').trim().toLowerCase().replace(/["']/g, ''));
 
     // Map common aliases
     const nameIdx = rawHeaders.findIndex((h) => h.includes('name') || h.includes('title') || h.includes('product') || h.includes('commodity'));
@@ -182,7 +182,7 @@ NutriFit California Roasted Almonds (30x 200g) | NutriFit Foods | Food | 1890456
 
       itemsToProcess = rawLines.map((line, idx) => {
         let cat: ProductCategory = 'Food';
-        const lineLower = line.toLowerCase();
+        const lineLower = (line || '').toLowerCase();
         if (lineLower.includes('shampoo') || lineLower.includes('cosmetic') || lineLower.includes('cream')) cat = 'Cosmetics';
         else if (lineLower.includes('juice') || lineLower.includes('drink') || lineLower.includes('water')) cat = 'Beverages';
 

@@ -10,10 +10,35 @@ import {
   ManufacturerRiskProfile,
   GtinLookupResult,
   AuthUser,
-  ComplianceStatus
+  ComplianceStatus,
+  AiEngineStatusSnapshot,
+  AiAnalysisStatus,
+  AnalysisExecutionMetadata,
+  LocalOcrPanelResult,
+  ExtractedDeclaration
 } from '../types/index';
+import {
+  cacheDashboardSnapshot,
+  cacheInspection,
+  cacheInspectionsBatch,
+  getCachedDashboardSnapshot,
+  getCachedInspectionById,
+  getRecentCachedInspections,
+} from '../utils/inspectionCache';
 
 const API_BASE = '/api';
+
+export const ADVISORY_AI_UNAVAILABLE =
+  'AI-assisted analysis is temporarily unavailable. Local OCR and compliance validation are continuing.';
+
+export function sanitizeErrorMessage(raw?: string): string {
+  const msg = String(raw || '').trim();
+  if (!msg) return 'Request could not be completed. Local OCR and rule validation remain available.';
+  if (/429|503|resource_exhausted|quota\s*exceeded|rate\s*limit|model\s*unavailable|high\s*demand/i.test(msg)) {
+    return ADVISORY_AI_UNAVAILABLE;
+  }
+  return msg;
+}
 
 export async function loginUser(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
   const res = await fetch(`${API_BASE}/auth/login`, {
@@ -60,10 +85,51 @@ export async function fetchHealth(): Promise<any> {
   return res.json();
 }
 
-export async function fetchDashboardStats(): Promise<DashboardStats> {
-  const res = await fetch(`${API_BASE}/dashboard`);
-  if (!res.ok) throw new Error('Failed to fetch dashboard stats');
+export async function fetchAiSettings(): Promise<AiEngineStatusSnapshot> {
+  const res = await fetch(`${API_BASE}/settings/ai`);
+  if (!res.ok) throw new Error('Failed to fetch AI configuration status');
   return res.json();
+}
+
+export async function updateAiSettings(
+  payload: {
+    primaryModel?: string;
+    fallbackModel?: string;
+    aiEnabled?: boolean;
+    timeoutMs?: number;
+    maxRetries?: number;
+  },
+  token?: string | null
+): Promise<{ success: boolean; ai_engine: AiEngineStatusSnapshot }> {
+  const res = await fetch(`${API_BASE}/settings/ai`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to update AI settings' }));
+    throw new Error(sanitizeErrorMessage(err.error || 'Failed to update AI settings'));
+  }
+  return res.json();
+}
+
+export async function fetchDashboardStats(): Promise<DashboardStats & { _fromCache?: boolean; _cachedAt?: string }> {
+  try {
+    const res = await fetch(`${API_BASE}/dashboard`);
+    if (!res.ok) throw new Error('Failed to fetch dashboard stats');
+    const data: DashboardStats = await res.json();
+    void cacheDashboardSnapshot(data);
+    return data;
+  } catch (err) {
+    const cached = await getCachedDashboardSnapshot();
+    if (cached.stats) {
+      return { ...cached.stats, _fromCache: true, _cachedAt: cached.cachedAt };
+    }
+    throw err;
+  }
 }
 
 export async function fetchInspections(params?: {
@@ -76,15 +142,35 @@ export async function fetchInspections(params?: {
   if (params?.category) url.searchParams.set('category', params.category);
   if (params?.query) url.searchParams.set('query', params.query);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error('Failed to fetch inspections');
-  return res.json();
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error('Failed to fetch inspections');
+    const data: InspectionRecord[] = await res.json();
+    void cacheInspectionsBatch(data);
+    return data;
+  } catch (err) {
+    const cached = await getRecentCachedInspections(params);
+    if (cached.length > 0) {
+      return cached;
+    }
+    throw err;
+  }
 }
 
 export async function fetchInspectionById(id: string): Promise<InspectionRecord> {
-  const res = await fetch(`${API_BASE}/inspections/${id}`);
-  if (!res.ok) throw new Error(`Inspection ${id} not found`);
-  return res.json();
+  try {
+    const res = await fetch(`${API_BASE}/inspections/${id}`);
+    if (!res.ok) throw new Error(`Inspection ${id} not found`);
+    const data: InspectionRecord = await res.json();
+    void cacheInspection(data);
+    return data;
+  } catch (err) {
+    const cached = await getCachedInspectionById(id);
+    if (cached) {
+      return cached;
+    }
+    throw err;
+  }
 }
 
 export async function createInspection(data: Partial<InspectionRecord>): Promise<InspectionRecord> {
@@ -94,8 +180,14 @@ export async function createInspection(data: Partial<InspectionRecord>): Promise
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to create inspection record');
-  return res.json();
+  const created: InspectionRecord = await res.json();
+  void cacheInspection(created);
+  return created;
 }
+
+const inFlightAnalyzeMap = new Map<string, Promise<any>>();
+const analyzeResultCache = new Map<string, { timestamp: number; data: any }>();
+const ANALYZE_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export async function analyzeInspection(
   id: string,
@@ -104,37 +196,99 @@ export async function analyzeInspection(
     package_level?: string;
     bulk_box_details?: any;
     demo_preset_id?: string;
+    scan_id?: string;
+    skip_ai?: boolean;
+    calibration?: any;
+    local_ocr?: {
+      panels: LocalOcrPanelResult[];
+      declarations: ExtractedDeclaration[];
+      avgConfidence: number;
+      lowConfidenceDetected: boolean;
+      warnings: string[];
+    };
   },
-  timeoutMs: number = 65000
-): Promise<{ success: boolean; inspection: InspectionRecord; ai_source: string; certificate?: any }> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
+  timeoutMs: number = 65000,
+  externalSignal?: AbortSignal
+): Promise<{
+  success: boolean;
+  inspection: InspectionRecord;
+  ai_source: string;
+  ai_status?: AiAnalysisStatus;
+  advisory_message?: string;
+  analysis_meta?: AnalysisExecutionMetadata;
+  certificate?: any;
+}> {
   const payload = Array.isArray(imagesOrPayload)
     ? { images: imagesOrPayload }
     : (imagesOrPayload || {});
 
-  try {
-    const res = await fetch(`${API_BASE}/inspections/${id}/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
+  const fingerprint = JSON.stringify({
+    id,
+    demo: payload.demo_preset_id,
+    skipAi: !!payload.skip_ai,
+    pkg: payload.package_level,
+    imgs: (payload.images || []).map((img: any) => img.sha256 || img.id || img.name),
+    ocrCount: payload.local_ocr?.panels?.length || 0,
+  });
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Analysis failed' }));
-      throw new Error(err.error || 'Inspection analysis failed');
-    }
-    return res.json();
-  } catch (error: any) {
-    clearTimeout(timeoutId);
-    if (error.name === 'AbortError') {
-      throw new Error(`Screening analysis timed out after ${Math.round(timeoutMs / 1000)}s. Please retry or load pre-screened verification results.`);
-    }
-    throw error;
+  const cached = analyzeResultCache.get(fingerprint);
+  if (cached && Date.now() - cached.timestamp < ANALYZE_CACHE_TTL_MS) {
+    return cached.data;
   }
+
+  const existingInFlight = inFlightAnalyzeMap.get(fingerprint);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('Screening cancelled', 'AbortError');
+    }
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  const requestPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/inspections/${id}/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Analysis failed' }));
+        throw new Error(sanitizeErrorMessage(err.error || 'Inspection analysis failed'));
+      }
+      const data = await res.json();
+      if (data?.inspection) {
+        void cacheInspection(data.inspection);
+      }
+      analyzeResultCache.set(fingerprint, { timestamp: Date.now(), data });
+      return data;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        if (externalSignal?.aborted) {
+          throw new DOMException('Screening cancelled', 'AbortError');
+        }
+        throw new Error(`Screening analysis timed out after ${Math.round(timeoutMs / 1000)}s. Please retry or use local OCR screening.`);
+      }
+      throw new Error(sanitizeErrorMessage(error?.message));
+    } finally {
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+      inFlightAnalyzeMap.delete(fingerprint);
+    }
+  })();
+
+  inFlightAnalyzeMap.set(fingerprint, requestPromise);
+  return requestPromise;
 }
 
 export async function verifyInspection(
@@ -156,23 +310,40 @@ export async function verifyInspection(
     body: JSON.stringify(verification),
   });
   if (!res.ok) throw new Error('Failed to record verification');
-  return res.json();
+  const data = await res.json();
+  if (data?.inspection) void cacheInspection(data.inspection);
+  return data;
 }
 
 export async function recalibrateFrontOcrApi(
   id: string,
-  officer_name?: string
-): Promise<{ success: boolean; inspection: InspectionRecord }> {
+  officer_name?: string,
+  local_ocr?: {
+    panel?: LocalOcrPanelResult;
+    declarations?: ExtractedDeclaration[];
+  }
+): Promise<{
+  success: boolean;
+  inspection: InspectionRecord;
+  ai_status?: AiAnalysisStatus;
+  ai_assisted_completed?: boolean;
+  advisory_message?: string;
+}> {
   const res = await fetch(`${API_BASE}/inspections/${id}/recalibrate-front-ocr`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ officer_name: officer_name || 'Enforcement Officer' }),
+    body: JSON.stringify({
+      officer_name: officer_name || 'Enforcement Officer',
+      ...(local_ocr ? { local_ocr } : {}),
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Recalibration failed' }));
-    throw new Error(err.error || 'Failed to recalibrate front OCR');
+    throw new Error(sanitizeErrorMessage(err.error || 'Failed to recalibrate front OCR'));
   }
-  return res.json();
+  const data = await res.json();
+  if (data?.inspection) void cacheInspection(data.inspection);
+  return data;
 }
 
 export async function calibrateBoxApi(
@@ -188,7 +359,9 @@ export async function calibrateBoxApi(
     const err = await res.json().catch(() => ({ error: 'Calibration failed' }));
     throw new Error(err.error || 'Failed to calibrate bounding box');
   }
-  return res.json();
+  const data = await res.json();
+  if (data?.inspection) void cacheInspection(data.inspection);
+  return data;
 }
 
 export async function fetchRules(): Promise<RuleDefinition[]> {
@@ -240,7 +413,9 @@ export async function updateDisputeStatus(
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to update dispute status');
-  return res.json();
+  const data_res = await res.json();
+  if (data_res?.inspection) void cacheInspection(data_res.inspection);
+  return data_res;
 }
 
 export async function fetchRuleAuditLogs(): Promise<any[]> {
@@ -276,7 +451,11 @@ export async function submitBulkIntake(data: {
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to process bulk intake');
-  return res.json();
+  const resData = await res.json();
+  if (Array.isArray(resData?.inspections)) {
+    void cacheInspectionsBatch(resData.inspections);
+  }
+  return resData;
 }
 
 export async function syncOfflineInspections(
@@ -288,6 +467,7 @@ export async function syncOfflineInspections(
     body: JSON.stringify({ queued_records }),
   });
   if (!res.ok) throw new Error('Failed to sync offline records');
+  void cacheInspectionsBatch(queued_records.map((r) => ({ ...r, sync_status: 'SYNCED' })));
   return res.json();
 }
 
@@ -395,9 +575,17 @@ export async function markNotificationRead(id: string): Promise<boolean> {
 
 // Repeat Offender / Manufacturer Risk Matrix
 export async function fetchManufacturerRiskProfiles(days: number = 90): Promise<ManufacturerRiskProfile[]> {
-  const res = await fetch(`${API_BASE}/risk-scoring?days=${days}`);
-  if (!res.ok) throw new Error('Failed to fetch manufacturer risk profiles');
-  return res.json();
+  try {
+    const res = await fetch(`${API_BASE}/risk-scoring?days=${days}`);
+    if (!res.ok) throw new Error('Failed to fetch manufacturer risk profiles');
+    return await res.json();
+  } catch (err) {
+    const cached = await getCachedDashboardSnapshot();
+    if (cached.riskProfiles.length > 0) {
+      return cached.riskProfiles;
+    }
+    throw err;
+  }
 }
 
 // GTIN / Barcode Cross-Registry Search

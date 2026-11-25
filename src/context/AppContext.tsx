@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { InspectionRecord, UserRole, AuthUser } from '../types/index';
+import { InspectionRecord, UserRole, AuthUser, AiEngineStatusSnapshot } from '../types/index';
 import { fetchHealth, loginUser, logoutUser } from '../services/api';
 
 export type { UserRole };
@@ -69,6 +69,7 @@ interface AppContextType {
     geminiConnected: boolean;
     geminiModel: string;
     ruleVersion: string;
+    aiEngine?: AiEngineStatusSnapshot;
   };
   refreshSystemStatus: () => Promise<void>;
   viewInspection: (inspection: InspectionRecord, view?: ViewType) => void;
@@ -195,7 +196,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             jurisdiction: 'National Consumer Vigilance',
             division: 'Public Citizen Consumer Affairs'
           }
-        ].find(u => u.email.toLowerCase() === email.toLowerCase());
+        ].find(u => (u?.email || '').toLowerCase() === (email || '').toLowerCase());
 
         if (found) {
           loginAsAccount(found, `token_${found.id}`);
@@ -235,11 +236,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  const [systemStatus, setSystemStatus] = useState({
+  const [systemStatus, setSystemStatus] = useState<{
+    connected: boolean;
+    geminiConnected: boolean;
+    geminiModel: string;
+    ruleVersion: string;
+    aiEngine?: AiEngineStatusSnapshot;
+  }>({
     connected: true,
     geminiConnected: false,
     geminiModel: 'gemini-4-hydrogen',
     ruleVersion: '2026.1 (LMPC Rules 2011)',
+    aiEngine: undefined,
   });
 
   const refreshSystemStatus = async () => {
@@ -250,6 +258,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         geminiConnected: !!data.gemini_connected,
         geminiModel: data.gemini_model || 'gemini-4-hydrogen',
         ruleVersion: data.rule_engine_version || '2026.1 (LMPC Rules 2011)',
+        aiEngine: data.ai_engine,
       });
     } catch (err) {
       console.warn('Backend status check pending:', err);

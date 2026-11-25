@@ -32,6 +32,18 @@ export const PDFReportViewer: React.FC = () => {
     return PREDEFINED_DEMO_PACKAGES.find((p) => p.id === currentInspection.demo_preset_id) || null;
   }, [currentInspection]);
 
+  const engineDescription = useMemo(() => {
+    const meta = currentInspection?.analysis_meta;
+    if (meta?.ai_assisted_completed) {
+      const modelLabel = meta.ai_model_used || 'Gemini';
+      return `Hybrid Local OCR (Tesseract.js) + ${modelLabel} + Statutory LMPC Rule Codification Engine`;
+    }
+    if (currentInspection?.demo_preset_id) {
+      return 'Calibrated Statutory Benchmark + Deterministic LMPC Rule Codification Engine';
+    }
+    return 'Local OCR (Tesseract.js) + Deterministic LMPC Rule Codification Engine';
+  }, [currentInspection]);
+
   if (!currentInspection) {
     return (
       <div className="p-4 sm:p-8 max-w-xl mx-auto text-center space-y-4 my-8 sm:my-16">
@@ -149,7 +161,7 @@ export const PDFReportViewer: React.FC = () => {
       y += 8;
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
-      doc.text(`Screening Engine: LEGALMETRIX AI (Gemini 4 Hydrogen + Statutory LMPC Rule Codification Engine)`, 14, y);
+      doc.text(`Screening Engine: LEGALMETRIX (${engineDescription})`, 14, y);
       doc.text(`Attested By Officer: ${currentInspection.officer_name}`, 14, y + 5);
       doc.text(`Jurisdiction / Cell: ${currentInspection.location || 'Central Metrology Cell'}`, 14, y + 10);
       doc.text(`Digital Timestamp: ${new Date().toISOString()}`, 14, y + 15);
@@ -440,7 +452,7 @@ export const PDFReportViewer: React.FC = () => {
         {/* Section 5: Statutory Disclaimer & Officer Signature */}
         <div className="pt-4 sm:pt-6 border-t-2 border-slate-900 space-y-4 sm:space-y-6">
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[10px] text-slate-600 leading-relaxed">
-            <strong>STATUTORY DISCLAIMER:</strong> This report is generated with AI-assisted multimodal extraction (Gemini 4 Hydrogen) and deterministic rule execution under the Legal Metrology (Packaged Commodities) Rules, 2011. Final legal determination and compounding actions remain under the statutory jurisdiction of the inspecting officer.
+            <strong>STATUTORY DISCLAIMER:</strong> This report is generated using {engineDescription} under the Legal Metrology (Packaged Commodities) Rules, 2011. Final legal determination and compounding actions remain under the statutory jurisdiction of the inspecting officer.
           </div>
 
           <div className="flex flex-col sm:flex-row items-start sm:items-end justify-between gap-4 pt-2">

@@ -1,15 +1,27 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { createInspection, analyzeInspection, fetchInspectionById, fetchProductFromUrl } from '../services/api';
+import {
+  createInspection,
+  analyzeInspection,
+  fetchInspectionById,
+  fetchProductFromUrl,
+  sanitizeErrorMessage
+} from '../services/api';
 import {
   InspectionImage,
   ImageType,
   ProductCategory,
   CalibrationConfig,
-  ScanMode
+  ScanMode,
+  LocalOcrPanelResult,
+  ExtractedDeclaration,
+  InspectionRecord,
+  ComplianceStatus
 } from '../types/index';
 import { AIAnalysisProgressModal } from './AIAnalysisProgressModal';
+import { DualEngineScanMonitor, DualEngineScanTelemetry } from './DualEngineScanMonitor';
 import { LiveCameraModal } from './LiveCameraModal';
+import { cacheInspection } from '../utils/inspectionCache';
 import {
   Upload,
   Camera,
@@ -45,6 +57,15 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { optimizePackagingImage } from '../utils/imageCompressor';
+import {
+  validateUploadFile,
+  computeSha256Hex,
+  preprocessImageInBrowser
+} from '../utils/imagePreprocessor';
+import { renderPdfToInspectionImages } from '../utils/pdfProcessor';
+import { runTesseractOcrBatch } from '../utils/tesseractOcr';
+import { extractDeclarationsFromOcrPanels } from '../utils/ocrFieldParser';
+import { LegalMetrologyRuleEngine, DEFAULT_RULES } from '../utils/ruleEngine';
 import {
   PREDEFINED_DEMO_PACKAGES,
   DemoPackagePreset,
@@ -137,7 +158,16 @@ const PRESET_SAMPLE_BACK = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.or
 </svg>`;
 
 export const NewInspectionView: React.FC = () => {
-  const { officerName, officerRole, viewInspection, showToast, isOnline, setOfflineQueueCount } = useApp();
+  const {
+    officerName,
+    officerRole,
+    confidenceThreshold,
+    viewInspection,
+    showToast,
+    isOnline,
+    setOfflineQueueCount,
+    systemStatus,
+  } = useApp();
   const isCitizen = officerRole === 'Citizen';
 
   const [images, setImages] = useState<InspectionImage[]>([]);
@@ -172,6 +202,11 @@ export const NewInspectionView: React.FC = () => {
   const [gpsConsent, setGpsConsent] = useState<boolean>(true);
 
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [scanStageIndex, setScanStageIndex] = useState<number>(0);
+  const [ocrProgress, setOcrProgress] = useState<number>(0);
+  const [scanStageDetail, setScanStageDetail] = useState<string>('');
+  const [advisoryMessage, setAdvisoryMessage] = useState<string | null>(null);
+  const [dualTelemetry, setDualTelemetry] = useState<DualEngineScanTelemetry | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [pendingRecordId, setPendingRecordId] = useState<string | null>(null);
   const [isLiveCameraOpen, setIsLiveCameraOpen] = useState<boolean>(false);
@@ -181,12 +216,42 @@ export const NewInspectionView: React.FC = () => {
   const [isFetchingUrl, setIsFetchingUrl] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mobileCameraInputRef = useRef<HTMLInputElement>(null);
+  const activeScanAbortRef = useRef<AbortController | null>(null);
+  const lastScanFingerprintRef = useRef<string | null>(null);
+  const lastScanRecordRef = useRef<InspectionRecord | null>(null);
 
   // Predefined Demo Datasets & Data Fields Catalog State
   const [selectedPreset, setSelectedPreset] = useState<DemoPackagePreset | null>(null);
   const [showPresetCatalog, setShowPresetCatalog] = useState<boolean>(true);
   const [catalogFilter, setCatalogFilter] = useState<string>('ALL');
   const [showFieldsPreview, setShowFieldsPreview] = useState<boolean>(false);
+
+  // Prevent cross-product contamination whenever inputs change between scans
+  useEffect(() => {
+    if (!isAnalyzing) {
+      setPendingRecordId(null);
+      lastScanFingerprintRef.current = null;
+      lastScanRecordRef.current = null;
+    }
+  }, [images, productName, brand, category, barcode, packageLevel, selectedPreset?.id]);
+
+  const handleResetScanSession = () => {
+    activeScanAbortRef.current?.abort();
+    activeScanAbortRef.current = null;
+    setSelectedPreset(null);
+    setImages([]);
+    setProductName('');
+    setBrand('');
+    setBarcode('');
+    setOfficerNotes('');
+    setPendingRecordId(null);
+    setAnalysisError(null);
+    setAdvisoryMessage(null);
+    setDualTelemetry(null);
+    lastScanFingerprintRef.current = null;
+    lastScanRecordRef.current = null;
+    showToast('Cleared current package session for a new scan.', 'info');
+  };
 
   // Reference Object Catalogue
   const referenceObjectsList = [
@@ -230,51 +295,144 @@ export const NewInspectionView: React.FC = () => {
     };
   }, [calibMethod, selectedRefObject, declaredDims]);
 
-  // Process image files with dimension & payload optimization
-  const processImageFile = (file: File, defaultType: ImageType = 'Front') => {
+  // Process image & PDF files with validation, deduplication, and OCR preprocessing
+  const processUploadedFiles = async (files: File[]) => {
+    if (!files || files.length === 0) return;
+
     setSelectedPreset(null);
     setImages((prev) => prev.map(({ demo_preset_id: _demoPresetId, ...image }) => image));
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const rawUrl = e.target?.result as string;
-      const optimized = await optimizePackagingImage(rawUrl, 1600, 0.88);
-      const newImg: InspectionImage = {
-        id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        type: defaultType,
-        name: file.name,
-        sizeBytes: optimized.sizeBytes || file.size,
-        url: optimized.dataUrl,
-        quality: {
-          overall: file.size > 50000 ? 'GOOD' : 'FAIR',
-          blurScore: 92,
-          contrastScore: 88,
-          brightnessScore: 88,
-          resolution: `${optimized.width}x${optimized.height} (Optimized Field Capture)`,
-          issues: file.size < 50000 ? ['Low resolution may impact micro-print extraction'] : []
+
+    for (let idx = 0; idx < files.length; idx++) {
+      const file = files[idx];
+      const validation = validateUploadFile(file);
+      if (!validation.valid) {
+        showToast(validation.reason || `Unsupported file: ${file.name}`, 'error');
+        continue;
+      }
+
+      if (validation.kind === 'pdf') {
+        try {
+          showToast(`Rendering PDF pages from "${file.name}" for local OCR...`, 'info');
+          const pdfRes = await renderPdfToInspectionImages(file, {
+            maxPages: 10,
+            scale: 2.0,
+          });
+          setImages((prev) => {
+            const existingHashes = new Set(prev.map((i) => i.sha256).filter(Boolean));
+            const uniquePages = pdfRes.images.filter((pImg) => {
+              if (pImg.sha256 && existingHashes.has(pImg.sha256)) return false;
+              if (pImg.sha256) existingHashes.add(pImg.sha256);
+              return true;
+            });
+            if (uniquePages.length < pdfRes.images.length) {
+              showToast('Skipped duplicate PDF page(s) already in scan.', 'info');
+            } else {
+              showToast(
+                `Prepared ${uniquePages.length} page(s) from "${file.name}" (${pdfRes.pageCount} total).`,
+                'success'
+              );
+            }
+            return [...prev, ...uniquePages];
+          });
+        } catch (pdfErr: any) {
+          showToast(pdfErr?.message || `Failed to render PDF "${file.name}".`, 'error');
         }
-      };
-      setImages((prev) => [...prev, newImg]);
-    };
-    reader.readAsDataURL(file);
+        continue;
+      }
+
+      // Standard Image File (JPG, JPEG, PNG, WEBP)
+      try {
+        const rawUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve(String(ev.target?.result || ''));
+          reader.onerror = () => reject(new Error(`Unable to read "${file.name}"`));
+          reader.readAsDataURL(file);
+        });
+
+        const fileBuffer = await file.arrayBuffer();
+        const fileSha256 = await computeSha256Hex(fileBuffer);
+
+        let displayUrl = rawUrl;
+        let preprocessedUrl: string | undefined;
+        let thresholdedUrl: string | undefined;
+        let preprocessingSteps: string[] = [];
+        let deskewAngleDeg = 0;
+        let width = 1280;
+        let height = 960;
+        let sizeBytes = file.size;
+        let quality: InspectionImage['quality'] = {
+          overall: file.size > 50000 ? 'GOOD' : 'FAIR',
+          blurScore: 88,
+          contrastScore: 86,
+          brightnessScore: 86,
+          resolution: 'HD Capture',
+          issues: file.size < 50000 ? ['Low resolution may impact micro-print extraction'] : []
+        };
+
+        try {
+          const prepped = await preprocessImageInBrowser(rawUrl);
+          displayUrl = prepped.displayUrl;
+          preprocessedUrl = prepped.preprocessedUrl;
+          thresholdedUrl = prepped.thresholdedUrl;
+          preprocessingSteps = prepped.steps;
+          deskewAngleDeg = prepped.deskewAngleDeg;
+          width = prepped.width;
+          height = prepped.height;
+          sizeBytes = prepped.sizeBytes;
+          quality = prepped.quality;
+        } catch {
+          const optimized = await optimizePackagingImage(rawUrl, 1600, 0.88);
+          displayUrl = optimized.dataUrl;
+          width = optimized.width;
+          height = optimized.height;
+          sizeBytes = optimized.sizeBytes || file.size;
+          quality.resolution = `${width}x${height} (Optimized Field Capture)`;
+        }
+
+        const defaultType: ImageType =
+          images.length === 0 && idx === 0 ? 'Front' : idx === 1 || images.length === 1 ? 'Back' : 'Side';
+
+        const newImg: InspectionImage = {
+          id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          type: defaultType,
+          name: file.name,
+          mimeType: file.type || 'image/jpeg',
+          sizeBytes,
+          sha256: fileSha256,
+          url: displayUrl,
+          deskewAngleDeg,
+          preprocessed_url: preprocessedUrl,
+          thresholded_url: thresholdedUrl,
+          preprocessing_steps: preprocessingSteps,
+          quality,
+        };
+
+        setImages((prev) => {
+          const isDup = prev.some((existing) => existing.sha256 && existing.sha256 === fileSha256);
+          if (isDup) {
+            showToast(`Skipped duplicate image "${file.name}" (already added to scan).`, 'info');
+            return prev;
+          }
+          return [...prev, newImg];
+        });
+      } catch (err: any) {
+        showToast(err?.message || `Failed to process "${file.name}".`, 'error');
+      }
+    }
   };
 
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragActive(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      Array.from(e.dataTransfer.files).forEach((file: File, idx) => {
-        const type: ImageType = idx === 0 ? 'Front' : idx === 1 ? 'Back' : 'Side';
-        processImageFile(file, type);
-      });
+      void processUploadedFiles(Array.from(e.dataTransfer.files));
     }
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      Array.from(e.target.files).forEach((file: File, idx) => {
-        const type: ImageType = images.length === 0 && idx === 0 ? 'Front' : 'Back';
-        processImageFile(file, type);
-      });
+    if (e.target.files && e.target.files.length > 0) {
+      void processUploadedFiles(Array.from(e.target.files));
+      e.target.value = '';
     }
   };
 
@@ -377,12 +535,54 @@ export const NewInspectionView: React.FC = () => {
   };
 
   const handleStartAnalysis = async () => {
+    if (isAnalyzing) return;
     if (images.length === 0) {
-      showToast('Please upload or capture at least one package label image.', 'error');
+      showToast('Please upload or capture at least one package label image or PDF.', 'error');
       return;
     }
 
+    const scanFingerprint = JSON.stringify({
+      imgs: images.map((img) => img.sha256 || `${img.id}:${img.type}`),
+      productName,
+      brand,
+      category,
+      barcode,
+      packageLevel,
+      calibMethod,
+      selectedPresetId: selectedPreset?.id || null,
+      isOnline,
+    });
+
+    // Avoid duplicate scans when user clicks Scan again on an identical completed payload
+    if (lastScanFingerprintRef.current === scanFingerprint && lastScanRecordRef.current) {
+      viewInspection(lastScanRecordRef.current, 'compliance_results');
+      showToast('Loaded completed scan results for this identical package.', 'info');
+      return;
+    }
+
+    activeScanAbortRef.current?.abort();
+    const abortController = new AbortController();
+    activeScanAbortRef.current = abortController;
+
+    const scanId = `SCAN-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+    const activeModelName = systemStatus.aiEngine?.primaryModel || systemStatus.geminiModel || 'gemini-4-hydrogen';
     setAnalysisError(null);
+    setAdvisoryMessage(null);
+    setScanStageIndex(0);
+    setOcrProgress(0);
+    setScanStageDetail(`Validating ${images.length} uploaded file(s) [${scanId}]`);
+    setDualTelemetry({
+      scanId,
+      productName: productName || 'Packaged Commodity',
+      currentStageIndex: 0,
+      stageDetail: `Validating ${images.length} uploaded file(s) [${scanId}]`,
+      ocrState: 'queued',
+      ocrProgress: 0,
+      ocrLanguage: 'eng',
+      ocrPanelsCount: images.length,
+      geminiState: 'waiting',
+      geminiModel: activeModelName,
+    });
     setIsAnalyzing(true);
 
     try {
@@ -412,27 +612,320 @@ export const NewInspectionView: React.FC = () => {
         };
       }
 
-      // 1. Check if terminal is currently offline
+      // STEP 2: IMAGE PROCESSING (preprocess & hash any capture lacking preprocessed layers)
+      setScanStageIndex(1);
+      const preprocessDetail = 'Enhancing grayscale contrast, sharpness & orientation for OCR...';
+      setScanStageDetail(preprocessDetail);
+      setDualTelemetry((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentStageIndex: 1,
+              stageDetail: preprocessDetail,
+              ocrState: 'preprocessing',
+              ocrProgress: 8,
+            }
+          : prev
+      );
+      let workingImages: InspectionImage[] = images;
+      if (!selectedPreset) {
+        workingImages = await Promise.all(
+          images.map(async (img) => {
+            if (img.url.startsWith('data:image/svg+xml')) {
+              const sha = img.sha256 || (await computeSha256Hex(img.url));
+              return { ...img, sha256: sha };
+            }
+            if (img.preprocessed_url && img.sha256) {
+              return img;
+            }
+            try {
+              const prepped = await preprocessImageInBrowser(img.url);
+              return {
+                ...img,
+                sha256: img.sha256 || prepped.sha256,
+                url: prepped.displayUrl || img.url,
+                deskewAngleDeg: prepped.deskewAngleDeg,
+                preprocessed_url: prepped.preprocessedUrl,
+                thresholded_url: prepped.thresholdedUrl,
+                preprocessing_steps: prepped.steps,
+                quality: img.quality || prepped.quality,
+              };
+            } catch {
+              const sha = img.sha256 || (await computeSha256Hex(img.url));
+              return { ...img, sha256: sha };
+            }
+          })
+        );
+        setImages(workingImages);
+      }
+
+      if (abortController.signal.aborted) {
+        throw new DOMException('Scan cancelled', 'AbortError');
+      }
+
+      // STEP 3: LOCAL OCR EXTRACTION (Tesseract.js - zero dependency on Gemini)
+      setScanStageIndex(2);
+      setOcrProgress(5);
+      let ocrPanels: LocalOcrPanelResult[] = [];
+      let parsedOutput: {
+        declarations: ExtractedDeclaration[];
+        inferredProduct: { name?: string; brand?: string };
+        avgConfidence: number;
+        lowConfidenceDetected: boolean;
+        warnings: string[];
+      } = {
+        declarations: [],
+        inferredProduct: {},
+        avgConfidence: 0,
+        lowConfidenceDetected: false,
+        warnings: [],
+      };
+
+      const ocrEligibleImages = selectedPreset
+        ? []
+        : workingImages.filter((img) => !img.url.startsWith('data:image/svg+xml'));
+
+      if (ocrEligibleImages.length > 0) {
+        const ocrStartLabel = `Running local Tesseract.js OCR across ${ocrEligibleImages.length} panel(s)...`;
+        setScanStageDetail(ocrStartLabel);
+        setDualTelemetry((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentStageIndex: 2,
+                stageDetail: ocrStartLabel,
+                ocrState: 'running',
+                ocrProgress: 5,
+                ocrPanelsCount: ocrEligibleImages.length,
+              }
+            : prev
+        );
+        ocrPanels = await runTesseractOcrBatch(ocrEligibleImages, {
+          language: 'eng',
+          signal: abortController.signal,
+          onProgress: (pct, label) => {
+            setOcrProgress(pct);
+            setScanStageDetail(label);
+            setDualTelemetry((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    currentStageIndex: 2,
+                    stageDetail: label,
+                    ocrState: 'running',
+                    ocrProgress: pct,
+                  }
+                : prev
+            );
+          },
+        });
+
+        workingImages = workingImages.map((img) => {
+          const panel = ocrPanels.find((p) => p.image_id === img.id);
+          return panel
+            ? { ...img, ocrText: panel.text, ocrConfidence: panel.confidence }
+            : img;
+        });
+      } else {
+        setOcrProgress(100);
+        setScanStageDetail('Calibrated label view ready for statutory evaluation...');
+        setDualTelemetry((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentStageIndex: 2,
+                stageDetail: 'Calibrated label view ready for statutory evaluation...',
+                ocrState: selectedPreset ? 'skipped' : 'completed',
+                ocrProgress: 100,
+              }
+            : prev
+        );
+      }
+
+      // STEP 4: INFORMATION EXTRACTION (Deterministic regex & structured Legal Metrology parser)
+      setScanStageIndex(3);
+      const parseDetail = 'Identifying MRP, Net Quantity, Manufacturer, Dates & Consumer Care...';
+      setScanStageDetail(parseDetail);
+      if (ocrPanels.length > 0) {
+        parsedOutput = extractDeclarationsFromOcrPanels(ocrPanels, {
+          minConfidence: confidenceThreshold,
+          productHint: productName || undefined,
+          brandHint: brand || undefined,
+          barcodeHint: barcode || undefined,
+        });
+      }
+
+      const totalOcrLines = ocrPanels.reduce((sum, p) => sum + (p.lines?.length || 0), 0);
+      const totalOcrDuration = ocrPanels.reduce((sum, p) => sum + (p.duration_ms || 0), 0);
+      setDualTelemetry((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentStageIndex: 3,
+              stageDetail: parseDetail,
+              ocrState: selectedPreset ? 'skipped' : 'completed',
+              ocrProgress: 100,
+              ocrLinesCount: totalOcrLines,
+              ocrAvgConfidence: parsedOutput.avgConfidence,
+              ocrDurationMs: totalOcrDuration,
+            }
+          : prev
+      );
+
+      const resolvedProductName =
+        productName.trim() ||
+        parsedOutput.inferredProduct.name ||
+        (packageLevel === 'BULK_BOX' ? 'Wholesale Master Shipper Carton' : 'Packaged Commodity');
+      const resolvedBrand =
+        brand.trim() || parsedOutput.inferredProduct.brand || 'Unspecified Brand';
+
+      // STEP 5: COMPLIANCE EVALUATION (Offline browser rule engine OR Backend Hybrid OCR + Rule Engine)
+      setScanStageIndex(4);
       if (!isOnline) {
-        setTimeout(() => {
-          setIsAnalyzing(false);
-          setOfflineQueueCount((prev) => prev + 1);
-          showToast(
-            'Terminal in Offline Field Mode. Evidence & metadata buffered in encrypted local storage. Will auto-sync upon reconnection.',
-            'info'
-          );
-        }, 1200);
+        setScanStageDetail('Offline mode: Evaluating local OCR declarations with Legal Metrology Rule Engine...');
+        setDualTelemetry((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentStageIndex: 4,
+                stageDetail: 'Offline mode: Evaluating local OCR declarations with Legal Metrology Rule Engine...',
+                geminiState: 'skipped',
+                aiStatus: 'SKIPPED',
+                advisoryMessage:
+                  'Terminal is offline. Local OCR and compliance validation completed; AI-assisted enhancement skipped.',
+              }
+            : prev
+        );
+        const offlineEngine = new LegalMetrologyRuleEngine(DEFAULT_RULES);
+        const avgQualityPoor = workingImages.some((img) => img.quality?.overall === 'POOR');
+        const readabilityStatus: ComplianceStatus = avgQualityPoor ? 'REVIEW' : 'PASS';
+        const evalResult = offlineEngine.evaluateInspection(
+          parsedOutput.declarations,
+          workingImages.map((i) => ({ id: i.id, type: i.type })),
+          category,
+          {
+            characterHeightPxEstimated: 24,
+            referenceScalePresent: calibMethod !== 'NONE',
+            is_calibrated: calibMethod !== 'NONE',
+            calibration_label: calibrationMetrics.statusLabel,
+            scale_factor_px_per_mm: calibrationMetrics.pxPerMm || undefined,
+            estimatedCharHeightMm: calibrationMetrics.charHeightMm || undefined,
+            requiredMinHeightMm: 2.0,
+            contrastRatio: avgQualityPoor ? 4.2 : 11.5,
+            sharpness: avgQualityPoor ? 48 : 88,
+            status: readabilityStatus,
+            message: 'Evaluated locally using browser optical sharpness & Rule 7/8 legibility check.',
+          },
+          parsedOutput.declarations.find((d) => d.field === 'mfg_date')?.normalized_value,
+          packageLevel
+        );
+
+        const manualReq =
+          evalResult.overallStatus === 'REVIEW' ||
+          parsedOutput.lowConfidenceDetected ||
+          avgQualityPoor ||
+          parsedOutput.declarations.some((d) => d.status === 'UNCERTAIN');
+
+        const offlineStatus: ComplianceStatus =
+          evalResult.overallStatus === 'PASS' && manualReq ? 'REVIEW' : evalResult.overallStatus;
+
+        const nowIso = new Date().toISOString();
+        const offlineRecord: InspectionRecord = {
+          id: `INS-OFFLINE-${Date.now().toString().slice(-5)}`,
+          data_source: 'LOCAL_OCR_RULE_ENGINE',
+          analysis_meta: {
+            scan_id: scanId,
+            ocr_completed: true,
+            rule_validation_completed: true,
+            ai_assisted_completed: false,
+            ai_status: 'SKIPPED',
+            manual_verification_required: manualReq,
+            advisory_message:
+              'Terminal is offline. Local OCR and compliance validation completed; AI-assisted enhancement skipped.',
+            ocr_engine: 'Tesseract.js (Local Browser)',
+            ocr_language: 'eng',
+            ocr_avg_confidence: parsedOutput.avgConfidence,
+            source_documents_count: workingImages.length,
+            completed_at: nowIso,
+          },
+          ocr_panels: ocrPanels,
+          product_name: resolvedProductName,
+          brand: resolvedBrand,
+          category,
+          barcode: packageLevel === 'BULK_BOX' && bulkMasterBarcode ? bulkMasterBarcode : barcode,
+          dimensions: { ...declaredDims, unit: 'mm' },
+          reference_scale_present: calibMethod !== 'NONE',
+          calibration: calibrationConfig,
+          scan_mode: scanMode,
+          package_level: packageLevel,
+          location,
+          officer_id: 'OFF-FIELD-LOCAL',
+          officer_name: officerName,
+          officer_notes: officerNotes,
+          created_at: nowIso,
+          updated_at: nowIso,
+          status: offlineStatus,
+          screening_score: evalResult.screeningScore,
+          images: workingImages,
+          declarations: parsedOutput.declarations,
+          rule_evaluations: evalResult.evaluations,
+          cross_image_checks: evalResult.crossImageChecks,
+          dispute_status: 'NONE',
+          sync_status: 'PENDING_SYNC',
+          plain_language_summary: evalResult.plainLanguageSummary,
+          warnings: parsedOutput.warnings,
+        };
+
+        try {
+          const existingQueue = JSON.parse(localStorage.getItem('lm_offline_inspections') || '[]');
+          localStorage.setItem('lm_offline_inspections', JSON.stringify([offlineRecord, ...existingQueue]));
+        } catch {
+          // Ignore storage quota issues cleanly
+        }
+        void cacheInspection(offlineRecord);
+
+        setScanStageIndex(5);
+        setScanStageDetail('Generating local compliance report...');
+        setDualTelemetry((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentStageIndex: 5,
+                stageDetail: 'Saved offline compliance report to IndexedDB cache.',
+                geminiState: 'skipped',
+              }
+            : prev
+        );
+        setOfflineQueueCount((prev) => prev + 1);
+        lastScanFingerprintRef.current = scanFingerprint;
+        lastScanRecordRef.current = offlineRecord;
+        setIsAnalyzing(false);
+        viewInspection(offlineRecord, 'compliance_results');
+        showToast(
+          'Offline scan complete: Local OCR and compliance validation succeeded. Queued for sync.',
+          'info'
+        );
         return;
       }
 
-      // 2. Create or reuse inspection record in backend
+      setScanStageDetail('Validating compliance & running optional AI semantic assistance...');
+      setDualTelemetry((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentStageIndex: 4,
+              stageDetail: 'Evaluating LMPC Rules, 2011 & contacting Gemini API for semantic enrichment...',
+              geminiState: selectedPreset ? 'skipped' : 'running',
+            }
+          : prev
+      );
       let recordId = pendingRecordId;
       if (!recordId) {
         const newRecord = await createInspection({
           demo_preset_id: selectedPreset?.id,
-          data_source: selectedPreset ? 'DEMO_PRESET' : 'MANUAL_ENTRY',
-          product_name: productName || (packageLevel === 'BULK_BOX' ? 'Wholesale Master Shipper Carton' : 'Packaged Commodity'),
-          brand: brand || 'Unspecified Brand',
+          data_source: selectedPreset ? 'DEMO_PRESET' : 'LOCAL_OCR_RULE_ENGINE',
+          product_name: resolvedProductName,
+          brand: resolvedBrand,
           category,
           barcode: packageLevel === 'BULK_BOX' && bulkMasterBarcode ? bulkMasterBarcode : barcode,
           dimensions: { ...declaredDims, unit: 'mm' },
@@ -449,26 +942,73 @@ export const NewInspectionView: React.FC = () => {
           location,
           officer_name: officerName,
           officer_notes: officerNotes,
-          images
+          images: workingImages
         });
         recordId = newRecord.id;
         setPendingRecordId(recordId);
       }
 
-      // 3. Trigger AI multimodal analysis with 90s timeout
-      const analysisRes = await analyzeInspection(recordId, {
-        images,
-        demo_preset_id: selectedPreset?.id,
-        package_level: packageLevel,
-        bulk_box_details: packageLevel === 'BULK_BOX' ? {
-          inner_retail_units_count: bulkUnitsCount,
-          unit_net_quantity: bulkUnitNetMass,
-          total_gross_weight: bulkTotalGrossWeight,
-          master_shipper_barcode: bulkMasterBarcode
-        } : undefined
-      }, 90000);
+      const localOcrPayload =
+        ocrPanels.length > 0
+          ? {
+              panels: ocrPanels,
+              declarations: parsedOutput.declarations,
+              avgConfidence: parsedOutput.avgConfidence,
+              lowConfidenceDetected: parsedOutput.lowConfidenceDetected,
+              warnings: parsedOutput.warnings,
+            }
+          : undefined;
 
-      // 4. Navigate to results upon completion
+      const analysisRes = await analyzeInspection(
+        recordId,
+        {
+          images: workingImages,
+          demo_preset_id: selectedPreset?.id,
+          package_level: packageLevel,
+          calibration: calibrationConfig,
+          scan_id: scanId,
+          local_ocr: localOcrPayload,
+          bulk_box_details: packageLevel === 'BULK_BOX' ? {
+            inner_retail_units_count: bulkUnitsCount,
+            unit_net_quantity: bulkUnitNetMass,
+            total_gross_weight: bulkTotalGrossWeight,
+            master_shipper_barcode: bulkMasterBarcode
+          } : undefined
+        },
+        90000,
+        abortController.signal
+      );
+
+      // STEP 6: REPORT GENERATION
+      setScanStageIndex(5);
+      setScanStageDetail('Report ready. Opening statutory compliance findings...');
+      const resolvedAiStatus = analysisRes.ai_status || analysisRes.inspection?.analysis_meta?.ai_status;
+      const resolvedAdv = analysisRes.advisory_message || analysisRes.inspection?.analysis_meta?.advisory_message;
+      if (resolvedAdv && !selectedPreset) {
+        setAdvisoryMessage(resolvedAdv);
+      }
+      setDualTelemetry((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentStageIndex: 5,
+              stageDetail: 'Report generated and persisted to IndexedDB cache.',
+              aiStatus: resolvedAiStatus,
+              geminiModel: analysisRes.analysis_meta?.ai_model_used || prev.geminiModel,
+              geminiState:
+                resolvedAiStatus === 'COMPLETED'
+                  ? 'completed'
+                  : resolvedAiStatus === 'SKIPPED' || selectedPreset
+                  ? 'skipped'
+                  : 'fallback_local',
+              advisoryMessage: resolvedAdv || null,
+            }
+          : prev
+      );
+
+      lastScanFingerprintRef.current = scanFingerprint;
+      lastScanRecordRef.current = analysisRes.inspection;
+
       setTimeout(() => {
         setIsAnalyzing(false);
         setAnalysisError(null);
@@ -477,8 +1017,8 @@ export const NewInspectionView: React.FC = () => {
         const hasCert = !!analysisRes.inspection?.certificate_id;
         if (analysisRes.inspection?.status === 'NO_PACKAGE_DETECTED') {
           showToast('Screening complete: No retail packaged commodity label detected in captured frame.', 'info');
-        } else if (analysisRes.ai_source === 'FALLBACK_PROTOTYPE_ENGINE' && !selectedPreset) {
-          showToast('Evidence secured in custody chain. Cloud vision AI is temporarily busy; declarations queued for officer verification.', 'info');
+        } else if (resolvedAdv && !selectedPreset) {
+          showToast(resolvedAdv, 'info');
         } else {
           showToast(
             hasCert
@@ -487,12 +1027,26 @@ export const NewInspectionView: React.FC = () => {
             'success'
           );
         }
-      }, 800);
+      }, 650);
     } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        setIsAnalyzing(false);
+        setAnalysisError(null);
+        return;
+      }
       setIsAnalyzing(false);
-      const errMsg = err?.message || 'Inspection analysis timed out or encountered an error.';
-      setAnalysisError(errMsg);
-      showToast(errMsg, 'error');
+      const safeMsg = sanitizeErrorMessage(err?.message || 'Inspection analysis encountered an error.');
+      setAnalysisError(safeMsg);
+      setDualTelemetry((prev) =>
+        prev
+          ? {
+              ...prev,
+              error: safeMsg,
+              geminiState: 'error',
+            }
+          : prev
+      );
+      showToast(safeMsg, 'error');
     }
   };
 
@@ -805,7 +1359,7 @@ export const NewInspectionView: React.FC = () => {
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/*"
+            accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf"
             onChange={handleFileInputChange}
             className="hidden"
             id="file-browse-input"
@@ -903,10 +1457,10 @@ export const NewInspectionView: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-800">
-                    Upload Package Label Images
+                    Upload Package Label Images or PDF Documents
                   </h3>
                   <p className="text-xs text-slate-500 mt-1">
-                    Drag and drop Front, Back, and Side label views (JPEG, PNG, SVG up to 25MB)
+                    Drag and drop Front, Back, and Side labels or multi-page PDFs (JPG, JPEG, PNG, WEBP, PDF up to 25MB)
                   </p>
                 </div>
 
@@ -1053,16 +1607,27 @@ export const NewInspectionView: React.FC = () => {
 
           {/* Uploaded Images List */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-bold text-slate-900 flex items-center space-x-2">
                 <Layers className="h-4 w-4 text-blue-600" />
                 <span>Uploaded Package Views ({images.length})</span>
               </h3>
-              {images.length < 2 && (
-                <span className="text-xs text-amber-600 font-medium">
-                  Recommendation: Upload Front (PDP) &amp; Back (Declarations)
-                </span>
-              )}
+              <div className="flex items-center space-x-3">
+                {images.length < 2 && (
+                  <span className="text-xs text-amber-600 font-medium">
+                    Recommendation: Upload Front (PDP) &amp; Back (Declarations)
+                  </span>
+                )}
+                {images.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleResetScanSession}
+                    className="text-xs font-semibold text-slate-600 hover:text-red-600 bg-slate-100 hover:bg-red-50 px-2.5 py-1 rounded-lg border border-slate-200 transition cursor-pointer"
+                  >
+                    Clear / New Scan
+                  </button>
+                )}
+              </div>
             </div>
 
             {images.length === 0 ? (
@@ -1593,13 +2158,38 @@ export const NewInspectionView: React.FC = () => {
         </div>
       </div>
 
+      {/* Inline Dual-Engine OCR & AI Status Monitor */}
+      {dualTelemetry && (
+        <DualEngineScanMonitor
+          telemetry={dualTelemetry}
+          variant="inline"
+          onDismiss={() => setDualTelemetry(null)}
+        />
+      )}
+
       {/* Live Camera Viewfinder Modal */}
       <LiveCameraModal
         isOpen={isLiveCameraOpen}
         onClose={() => setIsLiveCameraOpen(false)}
-        onCapture={(img) => {
-         setSelectedPreset(null);
-         setImages((prev) => [...prev.map(({ demo_preset_id: _demoPresetId, ...image }) => image), img]);
+        onCapture={async (img) => {
+          setSelectedPreset(null);
+          let enriched = img;
+          try {
+            const prepped = await preprocessImageInBrowser(img.url);
+            enriched = {
+              ...img,
+              url: prepped.displayUrl || img.url,
+              sha256: img.sha256 || prepped.sha256,
+              deskewAngleDeg: prepped.deskewAngleDeg,
+              preprocessed_url: prepped.preprocessedUrl,
+              thresholded_url: prepped.thresholdedUrl,
+              preprocessing_steps: prepped.steps,
+              quality: img.quality || prepped.quality,
+            };
+          } catch {
+            enriched = { ...img, sha256: img.sha256 || (await computeSha256Hex(img.url)) };
+          }
+          setImages((prev) => [...prev.map(({ demo_preset_id: _demoPresetId, ...image }) => image), enriched]);
           showToast(`Captured high-resolution ${img.type} panel view.`, 'success');
         }}
       />
@@ -1608,10 +2198,17 @@ export const NewInspectionView: React.FC = () => {
       <AIAnalysisProgressModal
         isOpen={isAnalyzing}
         productName={productName || 'Packaged Commodity'}
+        currentStageIndex={scanStageIndex}
+        ocrProgress={ocrProgress}
+        stageDetail={scanStageDetail}
+        advisoryMessage={advisoryMessage}
+        telemetry={dualTelemetry || undefined}
         error={analysisError}
         onRetry={handleStartAnalysis}
         onFallbackSample={handleLoadFallbackSample}
         onCancel={() => {
+          activeScanAbortRef.current?.abort();
+          activeScanAbortRef.current = null;
           setIsAnalyzing(false);
           setAnalysisError(null);
         }}

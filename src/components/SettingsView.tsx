@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { resetDemoData, fetchSystemAuditLogs, logSystemAuditEntry } from '../services/api';
+import { resetDemoData, fetchSystemAuditLogs, logSystemAuditEntry, fetchAiSettings, updateAiSettings } from '../services/api';
 import { Permissions, getRoleBadgeMeta } from '../utils/permissions';
 import { ScheduleIITable } from './ScheduleIITable';
-import { SystemAuditLogEntry, UserRole } from '../types/index';
+import { SystemAuditLogEntry, UserRole, AiEngineStatusSnapshot } from '../types/index';
 import {
   Settings as SettingsIcon,
   UserCheck,
@@ -27,6 +27,7 @@ import {
 export const SettingsView: React.FC = () => {
   const {
     currentUser,
+    sessionToken,
     logout,
     officerRole,
     setOfficerRole,
@@ -44,16 +45,46 @@ export const SettingsView: React.FC = () => {
   const [loadingAudit, setLoadingAudit] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [aiSettings, setAiSettings] = useState<AiEngineStatusSnapshot | null>(systemStatus.aiEngine || null);
+  const [savingAiConfig, setSavingAiConfig] = useState(false);
 
   const canChangeConfig = Permissions.canChangeSystemConfig(officerRole);
   const canManageDemo = Permissions.canManageDemoEnvironment(officerRole);
   const roleBadge = getRoleBadgeMeta(officerRole);
 
   useEffect(() => {
+    fetchAiSettings()
+      .then((data) => setAiSettings(data))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     if (activeTab === 'audit_trail') {
       loadAuditLogs();
     }
   }, [activeTab]);
+
+  const handleUpdateAiConfig = async (patch: {
+    primaryModel?: string;
+    fallbackModel?: string;
+    aiEnabled?: boolean;
+  }) => {
+    if (!canChangeConfig) {
+      showToast('Restricted: Only Director General or Administrator may update AI model settings.', 'error');
+      return;
+    }
+    setSavingAiConfig(true);
+    try {
+      const res = await updateAiSettings(patch, sessionToken);
+      setAiSettings(res.ai_engine);
+      await refreshSystemStatus();
+      showToast('Hybrid OCR & AI model policy updated.', 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to update AI settings.', 'error');
+    } finally {
+      setSavingAiConfig(false);
+    }
+  };
 
   const loadAuditLogs = async () => {
     setLoadingAudit(true);
@@ -275,14 +306,109 @@ export const SettingsView: React.FC = () => {
                   </div>
                 )}
 
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                  <div>
-                    <span className="font-bold text-slate-800 block">System Multimodal Engine</span>
-                    <span className="text-[11px] text-slate-500 font-mono">{systemStatus.geminiModel}</span>
+                <div className="pt-3 border-t border-slate-100 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-800 block">Hybrid OCR &amp; AI Assistance Engine</span>
+                      <span className="text-[11px] text-slate-500">
+                        Primary OCR: Tesseract.js (Local) • Secondary AI:{' '}
+                        <span className="font-mono font-semibold text-slate-700">
+                          {aiSettings?.primaryModel || systemStatus.geminiModel}
+                        </span>
+                      </span>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
+                        aiSettings?.configured && aiSettings?.aiEnabled && aiSettings?.available
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : aiSettings?.configured && aiSettings?.aiEnabled
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-blue-100 text-blue-800'
+                      }`}
+                    >
+                      {aiSettings?.configured && aiSettings?.aiEnabled && aiSettings?.available
+                        ? 'HYBRID ACTIVE'
+                        : aiSettings?.configured && aiSettings?.aiEnabled
+                        ? 'COOLDOWN (LOCAL OCR)'
+                        : 'LOCAL OCR ACTIVE'}
+                    </span>
                   </div>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 font-mono">
-                    ACTIVE
-                  </span>
+
+                  {aiSettings && (
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-700">
+                          AI-Assisted Semantic Enhancement
+                        </span>
+                        <button
+                          type="button"
+                          disabled={!canChangeConfig || savingAiConfig}
+                          onClick={() => handleUpdateAiConfig({ aiEnabled: !aiSettings.aiEnabled })}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${
+                            !canChangeConfig
+                              ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                              : aiSettings.aiEnabled
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                              : 'bg-slate-700 hover:bg-slate-800 text-white cursor-pointer'
+                          }`}
+                        >
+                          {aiSettings.aiEnabled ? 'Enabled (Fallback Ready)' : 'Disabled (Local OCR Only)'}
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                            Primary AI Model
+                          </label>
+                          <select
+                            disabled={!canChangeConfig || savingAiConfig}
+                            value={aiSettings.primaryModel}
+                            onChange={(e) => handleUpdateAiConfig({ primaryModel: e.target.value })}
+                            className="w-full text-[11px] font-mono bg-white border border-slate-300 rounded-lg px-2 py-1.5 disabled:opacity-60"
+                          >
+                            {aiSettings.supportedModels.map((modelName) => (
+                              <option key={modelName} value={modelName}>
+                                {modelName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                            Secondary Fallback Model
+                          </label>
+                          <select
+                            disabled={!canChangeConfig || savingAiConfig}
+                            value={aiSettings.fallbackModel}
+                            onChange={(e) => handleUpdateAiConfig({ fallbackModel: e.target.value })}
+                            className="w-full text-[11px] font-mono bg-white border border-slate-300 rounded-lg px-2 py-1.5 disabled:opacity-60"
+                          >
+                            {aiSettings.supportedModels.map((modelName) => (
+                              <option key={modelName} value={modelName}>
+                                {modelName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {aiSettings.models.map((m) => (
+                          <span
+                            key={m.model}
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono border ${
+                              m.available
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : 'bg-amber-50 text-amber-800 border-amber-200'
+                            }`}
+                          >
+                            {m.model}: {m.available ? 'Healthy' : m.cooldownReason || 'Cooldown'}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

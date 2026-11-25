@@ -375,21 +375,31 @@ export const Header: React.FC = () => {
             <div
               id="badge-ai-mode"
               className="inline-flex items-center space-x-1 sm:space-x-1.5 px-2 sm:px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-xs"
-              title={`Active multimodal AI visual extraction via ${systemStatus.geminiModel}`}
+              title={`Active multimodal AI enhancement via ${systemStatus.geminiModel} + Local Tesseract OCR`}
             >
               <Sparkles className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-emerald-600 shrink-0" />
               <span>Live AI Extraction</span>
               <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
             </div>
-          ) : (
+          ) : systemStatus.aiEngine?.configured && systemStatus.aiEngine?.aiEnabled && !systemStatus.aiEngine?.available ? (
             <div
               id="badge-ai-mode"
               className="inline-flex items-center space-x-1 sm:space-x-1.5 px-2 sm:px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300 shadow-xs"
-              title="Operating in calibrated Fallback / Demo Mode"
+              title="AI-assisted analysis is temporarily in cooldown. Local OCR and rule validation are active."
             >
               <AlertTriangle className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-amber-600 shrink-0" />
-              <span>Fallback / Demo Mode</span>
+              <span>AI Cooldown — Local OCR Active</span>
               <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-amber-500 shrink-0"></span>
+            </div>
+          ) : (
+            <div
+              id="badge-ai-mode"
+              className="inline-flex items-center space-x-1 sm:space-x-1.5 px-2 sm:px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold bg-blue-50 text-blue-900 border border-blue-200 shadow-xs"
+              title="Operating with independent local Tesseract.js OCR and deterministic Legal Metrology Rule Engine"
+            >
+              <Sparkles className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-blue-600 shrink-0" />
+              <span>Local OCR + Rules Active</span>
+              <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-blue-500 shrink-0"></span>
             </div>
           )}
         </div>
@@ -486,7 +496,7 @@ export const Header: React.FC = () => {
                     <button
                       key={acc.id}
                       type="button"
-                      id={`btn-switch-role-${acc.role.toLowerCase().replace(/\s+/g, '-')}`}
+                      id={`btn-switch-role-${(acc?.role || '').toLowerCase().replace(/\s+/g, '-')}`}
                       onClick={() => {
                         loginAsAccount(acc, `lm_token_${acc.id}`);
                         setShowRoleSwitcher(false);

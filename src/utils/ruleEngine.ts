@@ -374,7 +374,7 @@ export class DeclarationStore {
   constructor(declarations: ExtractedDeclaration[]) {
     this.allDeclarations = declarations || [];
     for (const d of this.allDeclarations) {
-      if (!d || !d.field) continue;
+      if (!d || typeof d.field !== 'string' || !d.field.trim()) continue;
       const key = d.field.trim().toLowerCase();
       const list = this.declarationsByField.get(key) || [];
       list.push(d);
@@ -383,7 +383,7 @@ export class DeclarationStore {
   }
 
   public getAll(field: string, aliases: string[] = []): ExtractedDeclaration[] {
-    const keys = [field, ...aliases].map(k => k.trim().toLowerCase());
+    const keys = [field, ...aliases].map(k => (k || '').trim().toLowerCase()).filter(Boolean);
     const seen = new Set<string>();
     const results: ExtractedDeclaration[] = [];
     for (const k of keys) {
@@ -635,7 +635,7 @@ export class LegalMetrologyRuleEngine {
     const monthNameRegex = /(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[^\d]{1,5}(20\d{2})/i;
     const mMatch = clean.match(monthNameRegex);
     if (mMatch) {
-      const monthNum = monthNames[mMatch[1].toLowerCase()];
+      const monthNum = monthNames[(mMatch[1] || '').toLowerCase()];
       const yearNum = mMatch[2];
       if (monthNum && yearNum) {
         return `${yearNum}-${monthNum}`;
@@ -1097,10 +1097,10 @@ export class LegalMetrologyRuleEngine {
 
     if (frontQty && backQty && frontQty.found && backQty.found) {
       const isConsistent =
-        (frontQty.normalized_value || frontQty.original_text)
+        (frontQty.normalized_value || frontQty.original_text || '')
           .toLowerCase()
           .replace(/\s+/g, '') ===
-        (backQty.normalized_value || backQty.original_text)
+        (backQty.normalized_value || backQty.original_text || '')
           .toLowerCase()
           .replace(/\s+/g, '');
 
@@ -1127,10 +1127,10 @@ export class LegalMetrologyRuleEngine {
 
     if (frontMRP && backMRP && frontMRP.found && backMRP.found) {
       const isConsistent =
-        (frontMRP.normalized_value || frontMRP.original_text)
+        (frontMRP.normalized_value || frontMRP.original_text || '')
           .toLowerCase()
           .replace(/\s+/g, '') ===
-        (backMRP.normalized_value || backMRP.original_text)
+        (backMRP.normalized_value || backMRP.original_text || '')
           .toLowerCase()
           .replace(/\s+/g, '');
 

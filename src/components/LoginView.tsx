@@ -501,7 +501,7 @@ export const LoginView: React.FC = () => {
                             <button
                               key={officer.id}
                               type="button"
-                              id={`btn-login-sso-${officer.id.toLowerCase()}`}
+                              id={`btn-login-sso-${(officer?.id || '').toLowerCase()}`}
                               onClick={() => handleFastLogin(officer)}
                               className="bg-slate-950/80 hover:bg-slate-900 border border-slate-800 hover:border-amber-400/80 rounded-xl p-4 transition-all cursor-pointer group shadow-sm hover:shadow-md flex flex-col justify-between text-left focus:outline-none focus:ring-2 focus:ring-amber-400"
                             >
@@ -554,7 +554,7 @@ export const LoginView: React.FC = () => {
                             <button
                               key={off.id}
                               type="button"
-                              id={`btn-fill-cred-${off.id.toLowerCase()}`}
+                              id={`btn-fill-cred-${(off?.id || '').toLowerCase()}`}
                               onClick={() => {
                                 setEmail(off.email);
                                 setPassword('Password@123');

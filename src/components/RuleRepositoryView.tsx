@@ -68,8 +68,8 @@ export const RuleRepositoryView: React.FC = () => {
         fetchRules(),
         fetchRuleAuditLogs().catch(() => [])
       ]);
-      setRules(rulesData);
-      setAuditLogs(logsData);
+      setRules(Array.isArray(rulesData) ? rulesData.filter((r): r is RuleDefinition => Boolean(r && r.rule_id)) : []);
+      setAuditLogs(Array.isArray(logsData) ? logsData : []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -125,13 +125,17 @@ export const RuleRepositoryView: React.FC = () => {
     }
   };
 
-  const filteredRules = rules.filter(
-    (r) =>
-      r.title.toLowerCase().includes(search.toLowerCase()) ||
-      r.rule_id.toLowerCase().includes(search.toLowerCase()) ||
-      (r.source && r.source.toLowerCase().includes(search.toLowerCase())) ||
-      (r.field && r.field.toLowerCase().includes(search.toLowerCase()))
-  );
+  const searchQuery = (search || '').toLowerCase();
+  const filteredRules = rules.filter((r) => {
+    if (!r) return false;
+    return (
+      (r.title || '').toLowerCase().includes(searchQuery) ||
+      (r.rule_id || '').toLowerCase().includes(searchQuery) ||
+      (r.source || '').toLowerCase().includes(searchQuery) ||
+      (r.field || '').toLowerCase().includes(searchQuery) ||
+      (r.description || '').toLowerCase().includes(searchQuery)
+    );
+  });
 
   return (
     <div className="p-3 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4 sm:space-y-6">
@@ -277,12 +281,12 @@ export const RuleRepositoryView: React.FC = () => {
                     </div>
                   </div>
 
-                  <h3 className="text-sm font-bold text-slate-900">{rule.title}</h3>
-                  <p className="text-xs text-slate-600 leading-relaxed">{rule.description}</p>
+                  <h3 className="text-sm font-bold text-slate-900">{rule.title || rule.rule_id}</h3>
+                  <p className="text-xs text-slate-600 leading-relaxed">{rule.description || 'Statutory packaging compliance directive.'}</p>
 
                   <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-100 text-[11px] text-slate-600 space-y-1">
                     <div>
-                      <strong className="text-slate-800">Statutory Requirement:</strong> {rule.requirement}
+                      <strong className="text-slate-800">Statutory Requirement:</strong> {rule.requirement || 'Refer to codified Legal Metrology rule parameters.'}
                     </div>
                     {rule.gazette_notification_no && (
                       <div className="text-slate-500 font-mono text-[10px]">
@@ -384,7 +388,7 @@ export const RuleRepositoryView: React.FC = () => {
                     </td>
                     <td className="py-3 px-3">
                       <div className="space-y-1">
-                        {log.changes.map((c, i) => (
+                        {(Array.isArray(log.changes) ? log.changes : []).map((c, i) => (
                           <div key={i} className="text-[10px] font-mono text-slate-700">
                             <span className="font-bold text-slate-900">{c.field}:</span>{' '}
                             {c.before !== undefined && c.before !== null ? (

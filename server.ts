@@ -1,14 +1,16 @@
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import path from 'path';
-import dotenv from 'dotenv';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { db } from './server/db';
 import { analyzePackageImagesWithGemini, recalibrateFrontOcr } from './server/geminiService';
+import { getAiStatusSnapshot, updateAiSettings } from './server/geminiCircuitBreaker';
 import { preprocessImageForOcr } from './server/imagePreprocessor';
 import { LegalMetrologyRuleEngine } from './server/ruleEngine';
 import {
+  AnalysisExecutionMetadata,
   InspectionRecord,
   InspectionImage,
   ProductCategory,
@@ -23,8 +25,6 @@ import {
   RuleEvaluation
 } from './src/types/index';
 import { fetchRealProductFromUrl } from './server/urlFetcher';
-
-dotenv.config();
 
 async function startServer() {
   await db.init();
@@ -54,20 +54,62 @@ async function startServer() {
 
   // Health check
   app.get('/api/health', (req: Request, res: Response) => {
-    const hasGeminiKey = !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY';
+    const aiEngine = getAiStatusSnapshot();
     const persistence = db.getPersistenceStatus();
     res.json({
       status: 'ok',
       service: 'LEGALMETRIX API Server',
       sih_problem_statement: 'SIH 2026 PS 26034',
-      gemini_connected: hasGeminiKey,
-      gemini_model: 'gemini-4-hydrogen',
+      gemini_connected: aiEngine.configured && aiEngine.aiEnabled && aiEngine.available,
+      gemini_model: aiEngine.primaryModel,
+      ai_engine: aiEngine,
       rule_engine_version: '2026.1 (LMPC Rules 2011)',
       database_status: 'operational',
       persistence_active: persistence.isPersistent,
       persistence_engine: persistence.engine,
       timestamp: new Date().toISOString()
     });
+  });
+
+  // Safe AI engine status & runtime model selection (no API key exposure or entry UI)
+  app.get('/api/settings/ai', (_req: Request, res: Response) => {
+    res.json(getAiStatusSnapshot());
+  });
+
+  app.put('/api/settings/ai', (req: Request, res: Response) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const token = authHeader?.replace('Bearer ', '') || '';
+      const user = token ? db.getUserByToken(token) : undefined;
+      if (!user) {
+        return res.status(401).json({ error: 'Authentication required to modify AI configuration.' });
+      }
+      if (user.role !== 'Director General' && user.role !== 'Administrator') {
+        return res.status(403).json({ error: 'Only Director General or Administrator roles can update AI model settings.' });
+      }
+
+      const { primaryModel, fallbackModel, aiEnabled, timeoutMs, maxRetries } = req.body || {};
+      const previous = getAiStatusSnapshot();
+      const updated = updateAiSettings({ primaryModel, fallbackModel, aiEnabled, timeoutMs, maxRetries });
+
+      db.logSystemAudit({
+        category: 'CONFIG_CHANGE',
+        actor_name: user.name,
+        actor_role: user.role,
+        action: 'AI_MODEL_SETTINGS_UPDATED',
+        target: 'AI_ENHANCEMENT_ENGINE',
+        changes: [
+          { field: 'primaryModel', before: previous.primaryModel, after: updated.primaryModel },
+          { field: 'fallbackModel', before: previous.fallbackModel, after: updated.fallbackModel },
+          { field: 'aiEnabled', before: previous.aiEnabled, after: updated.aiEnabled }
+        ],
+        rationale: 'Updated hybrid AI model selection and enhancement toggle.'
+      });
+
+      res.json({ success: true, ai_engine: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Invalid AI configuration payload.' });
+    }
   });
 
   // Dashboard statistics
@@ -99,11 +141,11 @@ async function startServer() {
         const q = query.toLowerCase();
         inspections = inspections.filter(
           i =>
-            i.id.toLowerCase().includes(q) ||
-            i.product_name.toLowerCase().includes(q) ||
-            i.brand.toLowerCase().includes(q) ||
-            i.officer_name.toLowerCase().includes(q) ||
-            (i.barcode && i.barcode.includes(q))
+            (i?.id || '').toLowerCase().includes(q) ||
+            (i?.product_name || '').toLowerCase().includes(q) ||
+            (i?.brand || '').toLowerCase().includes(q) ||
+            (i?.officer_name || '').toLowerCase().includes(q) ||
+            (i?.barcode && i.barcode.includes(q))
         );
       }
 
@@ -296,7 +338,21 @@ async function startServer() {
       const demoPresetId = req.body.demo_preset_id || inspection.demo_preset_id ||
         imagesToAnalyze.find((image: InspectionImage) => image.demo_preset_id)?.demo_preset_id;
 
-      // 1. Multimodal AI Extraction with Gemini
+      const localOcrPayload = req.body.local_ocr || (inspection.ocr_panels?.length ? { panels: inspection.ocr_panels } : undefined);
+      const cacheDigest = crypto
+        .createHash('sha256')
+        .update(
+          JSON.stringify({
+            id,
+            cat: inspection.category,
+            skipAi: !!req.body.skip_ai,
+            imgs: imagesToAnalyze.map((img: InspectionImage) => img.sha256 || img.id || (img.url || '').slice(0, 128)),
+            ocrHash: localOcrPayload?.panels?.map((p: any) => p.image_sha256 || (p.text || '').length)
+          })
+        )
+        .digest('hex');
+
+      // 1. Hybrid OCR + Gemini Multimodal Extraction (Local OCR always preserved on AI failure)
       const extraction = await analyzePackageImagesWithGemini(
         imagesToAnalyze,
         inspection.category,
@@ -305,6 +361,13 @@ async function startServer() {
           brand: inspection.brand,
           barcode: inspection.barcode,
           demoPresetId
+        },
+        {
+          allowFallback: true,
+          skipAi: !!req.body.skip_ai,
+          scanId: req.body.scan_id,
+          requestCacheKey: cacheDigest,
+          localOcr: localOcrPayload
         }
       );
 
@@ -400,14 +463,18 @@ async function startServer() {
         ? 'Screening halted: Real-time object detection verified that no retail packaged commodity or statutory Legal Metrology declarations were present in the captured frame(s). Please align the camera directly on the commodity packaging label.'
         : evaluationResult.plainLanguageSummary;
 
-      // Attach Sharp preprocessed URLs to images for forensic and readability inspection
+      // Attach Sharp preprocessed URLs ONLY when client browser preprocessing has not already prepared aligned layers
       let enrichedImages = imagesToAnalyze;
       if (extraction.preprocessed_images && extraction.preprocessed_images.length > 0) {
         enrichedImages = imagesToAnalyze.map((img: any, idx: number) => {
+          if (img.preprocessed_url) {
+            return img;
+          }
           const prep = extraction.preprocessed_images?.find((p) => p.id === img.id || p.type === img.type) || extraction.preprocessed_images?.[idx];
           if (prep) {
             return {
               ...img,
+              deskewAngleDeg: 0,
               preprocessed_url: prep.preprocessedUri,
               thresholded_url: prep.thresholdedUri,
               preprocessing_steps: prep.steps
@@ -417,10 +484,41 @@ async function startServer() {
         });
       }
 
+      const hasUncertainDecl = extraction.declarations.some((d) => d.status === 'UNCERTAIN');
+      const localAvgConfidence = req.body.local_ocr?.avgConfidence;
+      const manualVerificationRequired =
+        !isPackageDetected ||
+        evaluationResult.overallStatus === 'REVIEW' ||
+        hasUncertainDecl ||
+        extraction.image_quality.overall === 'POOR' ||
+        (!extraction.ai_assisted_completed &&
+          !demoPresetId &&
+          (Boolean(req.body.local_ocr?.lowConfidenceDetected) ||
+            (typeof localAvgConfidence === 'number' && localAvgConfidence < 0.7)));
+
+      const analysisMeta: AnalysisExecutionMetadata = {
+        scan_id: req.body.scan_id,
+        ocr_completed: Boolean(extraction.ocr_completed),
+        rule_validation_completed: true,
+        ai_assisted_completed: Boolean(extraction.ai_assisted_completed),
+        ai_status: extraction.ai_status ?? (demoPresetId ? 'DEMO_PRESET' : 'UNAVAILABLE'),
+        manual_verification_required: manualVerificationRequired,
+        advisory_message: extraction.advisory_message,
+        ocr_engine: extraction.ocr_completed ? (demoPresetId ? 'Calibrated Reference Dataset' : 'Tesseract.js (Local)') : undefined,
+        ocr_language: localOcrPayload?.panels?.[0]?.language || 'eng',
+        ocr_avg_confidence: typeof localAvgConfidence === 'number' ? localAvgConfidence : undefined,
+        ai_model_used: extraction.ai_model_used,
+        source_documents_count: imagesToAnalyze.length,
+        completed_at: new Date().toISOString()
+      };
+
+      const resolvedStatus: ComplianceStatus =
+        finalStatus === 'PASS' && manualVerificationRequired ? 'REVIEW' : finalStatus;
+
       const updated = db.updateInspection(id, {
         product_name: extraction.product.name || inspection.product_name,
         brand: extraction.product.brand || inspection.brand,
-        status: finalStatus,
+        status: resolvedStatus,
         screening_score: finalScore,
         images: enrichedImages,
         declarations: extraction.declarations,
@@ -432,7 +530,13 @@ async function startServer() {
         cross_regime_notices: crossRegimeNotices,
         plain_language_summary: finalSummary,
         demo_preset_id: demoPresetId,
-        data_source: demoPresetId ? 'DEMO_PRESET' : extraction.is_fallback ? 'MANUAL_ENTRY' : 'LIVE_AI',
+        data_source: demoPresetId
+          ? 'DEMO_PRESET'
+          : extraction.ai_assisted_completed
+          ? 'HYBRID_OCR_GEMINI'
+          : 'LOCAL_OCR_RULE_ENGINE',
+        analysis_meta: analysisMeta,
+        ocr_panels: localOcrPayload?.panels || extraction.ocr_panels,
         package_level: currentPkgLevel,
         bulk_box_details: currentBulkDetails,
         mfg_date_stated: mfgDateStated,
@@ -440,11 +544,11 @@ async function startServer() {
         warnings: extraction.warnings
       });
 
-      // Auto-issue compliance certificate for clean passes (Clean Pass: Score >= 75, no FAIL violations)
+      // Auto-issue compliance certificate ONLY for verified clean passes (never promote REVIEW to PASS)
       let autoCert: ComplianceCertificate | null = null;
       const failEvaluations = (evaluationResult.evaluations || []).filter(e => e.status === 'FAIL');
       const hasViolations = failEvaluations.length > 0;
-      if (isPackageDetected && !hasViolations && finalScore >= 75 && updated) {
+      if (isPackageDetected && resolvedStatus === 'PASS' && !hasViolations && !manualVerificationRequired && finalScore >= 75 && updated) {
         autoCert = autoIssueComplianceCertificate(
           updated,
           inspection.officer_name || 'Inspector Rajesh Kumar (Legal Metrology)',
@@ -455,7 +559,7 @@ async function startServer() {
           updated.certificate_id = autoCert.certificate_id;
           updated.certificate = autoCert;
           updated.status = 'PASS';
-          db.updateInspection(updated.id, { 
+          db.updateInspection(updated.id, {
             certificate_id: autoCert.certificate_id,
             status: 'PASS'
           });
@@ -466,11 +570,18 @@ async function startServer() {
         success: true,
         inspection: updated,
         certificate: autoCert,
-        ai_source: extraction.is_fallback ? 'FALLBACK_PROTOTYPE_ENGINE' : 'GEMINI_MULTIMODAL_API'
+        ai_status: extraction.ai_status,
+        advisory_message: extraction.advisory_message,
+        analysis_meta: analysisMeta,
+        ai_source: demoPresetId
+          ? 'DEMO_PRESET'
+          : extraction.ai_assisted_completed
+          ? 'HYBRID_OCR_GEMINI'
+          : 'LOCAL_OCR_RULE_ENGINE'
       });
     } catch (err: any) {
-      console.error('Error during AI inspection analysis:', err);
-      res.status(500).json({ error: 'Inspection analysis failed', details: err.message });
+      console.error('Error during inspection analysis:', err);
+      res.status(500).json({ error: 'Inspection analysis could not be completed. Please verify the uploaded document and retry.' });
     }
   });
 
@@ -685,13 +796,15 @@ async function startServer() {
         return res.status(400).json({ error: 'No Front panel image found for this inspection.' });
       }
 
-      const newFrontDecls = await recalibrateFrontOcr(frontImage, {
+      const recalResult = await recalibrateFrontOcr(frontImage, {
         productName: inspection.product_name,
         brand: inspection.brand,
         category: inspection.category,
         barcode: inspection.barcode,
-        demoPresetId: inspection.demo_preset_id
+        demoPresetId: inspection.demo_preset_id,
+        localOcr: req.body?.local_ocr
       });
+      const newFrontDecls = recalResult.declarations;
 
       // Retain back/other declarations cleanly, and only keep non-recalibrated front fields if needed
       const frontRecalFields = new Set(newFrontDecls.map(d => d.field));
@@ -703,7 +816,7 @@ async function startServer() {
       });
 
       // Merge declarations cleanly
-      const mergedDeclarations = [...newFrontDecls, ...existingOtherDecls];
+      const mergedDeclarations = newFrontDecls.length > 0 ? [...newFrontDecls, ...existingOtherDecls] : inspection.declarations;
 
       // Re-evaluate rules with full inspection context
       const ruleEngine = new LegalMetrologyRuleEngine(db.getRules());
@@ -724,18 +837,34 @@ async function startServer() {
       const newScore = evaluationResult.screeningScore ?? (totalRules > 0 ? Math.round((passCount / totalRules) * 100) : inspection.screening_score);
       const newStatus = evaluationResult.overallStatus ?? (evaluationResult.evaluations.some(r => r.status === 'FAIL') ? 'FAIL' : 'PASS');
 
+      const updatedMeta: AnalysisExecutionMetadata = {
+        ...(inspection.analysis_meta || {
+          ocr_completed: Boolean(req.body?.local_ocr?.panels?.length || inspection.ocr_panels?.length),
+          rule_validation_completed: true,
+          ai_assisted_completed: recalResult.ai_assisted_completed,
+          ai_status: recalResult.ai_status,
+          manual_verification_required: newStatus === 'REVIEW'
+        }),
+        ai_assisted_completed: recalResult.ai_assisted_completed,
+        ai_status: recalResult.ai_status,
+        advisory_message: recalResult.advisory_message,
+        ai_model_used: recalResult.ai_model_used,
+        completed_at: new Date().toISOString()
+      };
+
       const updated = db.updateInspection(id, {
         declarations: mergedDeclarations,
         rule_evaluations: evaluationResult.evaluations,
         cross_image_checks: evaluationResult.crossImageChecks,
         screening_score: newScore,
         status: newStatus,
-        plain_language_summary: evaluationResult.plainLanguageSummary
+        plain_language_summary: evaluationResult.plainLanguageSummary,
+        analysis_meta: updatedMeta
       });
 
       db.logSystemAudit({
         category: 'CONFIG_CHANGE',
-        actor_name: req.body.officer_name || 'Enforcement Officer',
+        actor_name: req.body?.officer_name || 'Enforcement Officer',
         actor_role: 'Inspector',
         action: 'FRONT_OCR_RECALIBRATED',
         target: id,
@@ -743,21 +872,19 @@ async function startServer() {
           { field: 'front_declarations', before: inspection.declarations.filter(d => d.image_type === 'Front').length, after: newFrontDecls.length },
           { field: 'score', before: inspection.screening_score, after: newScore }
         ],
-        rationale: 'High-precision optical calibration applied to Principal Display Panel (PDP).'
+        rationale: 'Optical calibration applied to Principal Display Panel (PDP).'
       });
 
-      res.json({ success: true, inspection: updated });
+      res.json({
+        success: true,
+        inspection: updated,
+        ai_status: recalResult.ai_status,
+        ai_assisted_completed: recalResult.ai_assisted_completed,
+        advisory_message: recalResult.advisory_message
+      });
     } catch (err: any) {
-      const msg = err?.message || 'Unknown error';
-      const isBusy = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429') || msg.includes('temporarily busy');
-      if (isBusy) {
-        console.log('[LegalMetrix Vision] Front OCR recalibration deferred due to upstream model load:', msg);
-        return res.status(503).json({
-          error: 'Cloud vision model is temporarily busy (503). Existing declarations are preserved; please retry shortly.'
-        });
-      }
       console.error('Failed to recalibrate front OCR:', err);
-      res.status(500).json({ error: 'Failed to recalibrate front panel OCR: ' + msg });
+      res.status(500).json({ error: 'Failed to recalibrate front panel OCR. Existing declarations remain preserved.' });
     }
   });
 
@@ -841,18 +968,22 @@ async function startServer() {
   app.post('/api/rules', (req: Request, res: Response) => {
     try {
       const newRule = req.body;
+      if (!newRule?.rule_id || !newRule?.title) {
+        return res.status(400).json({ error: 'rule_id and title are required' });
+      }
       const actorName = req.body.actor_name || 'Enforcement Supervisor';
       const actorRole = req.body.actor_role || 'Supervisor';
       const rationale = req.body.rationale || 'Rule configuration addition';
 
-      const saved = db.saveRule(newRule);
+      const { actor_name: _an, actor_role: _ar, rationale: _rat, ...cleanRule } = newRule;
+      const saved = db.saveRule(cleanRule);
       db.logRuleChange({
         actor_name: actorName,
         actor_role: actorRole,
         action: 'CREATE',
-        rule_id: newRule.rule_id,
-        rule_title: newRule.title,
-        changes: [{ field: 'all', before: null, after: newRule.title }],
+        rule_id: saved.rule_id,
+        rule_title: saved.title,
+        changes: [{ field: 'all', before: null, after: saved.title }],
         rationale
       });
 
@@ -866,26 +997,28 @@ async function startServer() {
   app.put('/api/rules/:id', (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const updates = req.body || {};
       const existing = db.getRules().find(r => r.rule_id === id);
+      if (!existing) {
+        return res.status(404).json({ error: `Rule ${id} not found` });
+      }
 
-      const actorName = req.body.actor_name || 'Enforcement Supervisor';
-      const actorRole = req.body.actor_role || 'Supervisor';
-      const rationale = req.body.rationale || 'Statutory rule modification';
+      const actorName = updates.actor_name || 'Enforcement Supervisor';
+      const actorRole = updates.actor_role || 'Supervisor';
+      const rationale = updates.rationale || 'Statutory rule modification';
 
-      const saved = db.saveRule({ ...updates, rule_id: id });
+      const { actor_name: _an, actor_role: _ar, rationale: _rat, ...rulePatch } = updates;
+      const saved = db.saveRule({ ...existing, ...rulePatch, rule_id: id });
 
       const changes: { field: string; before?: any; after?: any }[] = [];
-      if (existing) {
-        if (updates.min_font_height_mm !== undefined && updates.min_font_height_mm !== existing.min_font_height_mm) {
-          changes.push({ field: 'min_font_height_mm', before: existing.min_font_height_mm, after: updates.min_font_height_mm });
-        }
-        if (updates.severity && updates.severity !== existing.severity) {
-          changes.push({ field: 'severity', before: existing.severity, after: updates.severity });
-        }
-        if (updates.active !== undefined && updates.active !== existing.active) {
-          changes.push({ field: 'active', before: existing.active, after: updates.active });
-        }
+      if (updates.min_font_height_mm !== undefined && updates.min_font_height_mm !== existing.min_font_height_mm) {
+        changes.push({ field: 'min_font_height_mm', before: existing.min_font_height_mm, after: updates.min_font_height_mm });
+      }
+      if (updates.severity && updates.severity !== existing.severity) {
+        changes.push({ field: 'severity', before: existing.severity, after: updates.severity });
+      }
+      if (updates.active !== undefined && updates.active !== existing.active) {
+        changes.push({ field: 'active', before: existing.active, after: updates.active });
       }
       if (changes.length === 0) {
         changes.push({ field: 'configuration', before: null, after: 'Modified parameters' });
@@ -1228,9 +1361,9 @@ async function startServer() {
               cross_regime_notices: LegalMetrologyRuleEngine.getCrossRegimeNotices(saved.category)
             });
 
-            // Auto-issue certificate for clean passes in bulk workflow (Score >= 75, no FAIL violations)
+            // Auto-issue certificate only for verified clean passes in bulk workflow (never promote REVIEW)
             const hasViolations = evaluations.some(e => e.status === 'FAIL');
-            if (isPackageDetected && !hasViolations && finalScore >= 75 && updatedRec) {
+            if (isPackageDetected && finalStatus === 'PASS' && !hasViolations && finalScore >= 75 && updatedRec) {
               const autoCert = autoIssueComplianceCertificate(
                 updatedRec,
                 officer_name || 'Digital Enforcement Cell',

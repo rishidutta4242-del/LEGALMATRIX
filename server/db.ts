@@ -363,11 +363,32 @@ class InMemoryDB {
 
       const ruleRes = this.sqliteDb.exec('SELECT id, data FROM rules');
       if (ruleRes.length > 0 && ruleRes[0].values.length > 0) {
-        this.rules = [];
+        const validRules: RuleDefinition[] = [];
+        const corruptRuleIds: string[] = [];
         for (const row of ruleRes[0].values) {
-          this.rules.push(JSON.parse(row[1] as string));
+          const rowId = row[0] as string;
+          try {
+            const parsed = JSON.parse(row[1] as string);
+            if (parsed && typeof parsed.rule_id === 'string' && typeof parsed.title === 'string' && parsed.title.trim().length > 0) {
+              validRules.push(parsed);
+            } else {
+              corruptRuleIds.push(rowId);
+            }
+          } catch {
+            corruptRuleIds.push(rowId);
+          }
         }
-        this.ruleEngine = new LegalMetrologyRuleEngine(this.rules);
+        if (corruptRuleIds.length > 0) {
+          for (const badId of corruptRuleIds) {
+            this.sqliteDb.run('DELETE FROM rules WHERE id = ?', [badId]);
+          }
+          this.flushDisk();
+          console.warn(`[LegalMetrix DB] Removed ${corruptRuleIds.length} malformed rule row(s):`, corruptRuleIds.join(', '));
+        }
+        if (validRules.length > 0) {
+          this.rules = validRules;
+          this.ruleEngine = new LegalMetrologyRuleEngine(this.rules);
+        }
       }
 
       const ruleAuditRes = this.sqliteDb.exec('SELECT id, data FROM rule_audit_logs ORDER BY timestamp DESC');
@@ -2007,7 +2028,8 @@ class InMemoryDB {
       (a, b) => new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime()
     );
     if (!citizenName) return all;
-    return all.filter(r => r.citizen_name.toLowerCase().includes(citizenName.toLowerCase()));
+    const q = (citizenName || '').toLowerCase();
+    return all.filter(r => (r?.citizen_name || '').toLowerCase().includes(q));
   }
 
   public getCitizenReport(id: string): CitizenReport | undefined {
@@ -2125,14 +2147,15 @@ class InMemoryDB {
 
   public saveRule(rule: RuleDefinition): RuleDefinition {
     const idx = this.rules.findIndex(r => r.rule_id === rule.rule_id);
+    const merged: RuleDefinition = idx >= 0 ? { ...this.rules[idx], ...rule } : rule;
     if (idx >= 0) {
-      this.rules[idx] = rule;
+      this.rules[idx] = merged;
     } else {
-      this.rules.push(rule);
+      this.rules.push(merged);
     }
     this.ruleEngine = new LegalMetrologyRuleEngine(this.rules);
-    this.persistRule(rule);
-    return rule;
+    this.persistRule(merged);
+    return merged;
   }
 
   private ruleAuditLogs: RuleAuditLogEntry[] = [
@@ -2331,12 +2354,12 @@ class InMemoryDB {
     if (query && query.trim()) {
       const q = query.toLowerCase().trim();
       list = list.filter(c =>
-        c.certificate_id.toLowerCase().includes(q) ||
-        c.product_name.toLowerCase().includes(q) ||
-        c.brand.toLowerCase().includes(q) ||
-        (c.gtin_barcode && c.gtin_barcode.toLowerCase().includes(q)) ||
-        c.inspection_id.toLowerCase().includes(q) ||
-        c.manufacturer_details.name.toLowerCase().includes(q)
+        (c?.certificate_id || '').toLowerCase().includes(q) ||
+        (c?.product_name || '').toLowerCase().includes(q) ||
+        (c?.brand || '').toLowerCase().includes(q) ||
+        (c?.gtin_barcode && c.gtin_barcode.toLowerCase().includes(q)) ||
+        (c?.inspection_id || '').toLowerCase().includes(q) ||
+        (c?.manufacturer_details?.name || '').toLowerCase().includes(q)
       );
     }
 
@@ -2621,8 +2644,10 @@ class InMemoryDB {
 
   // --- AUTHENTICATION & SESSION MANAGEMENT ---
   public getUserByEmail(email: string): UserAccount | undefined {
+    const normalizedEmail = typeof email === 'string' ? email.toLowerCase().trim() : '';
+    if (!normalizedEmail) return undefined;
     return Array.from(this.users.values()).find(
-      (u) => u.email.toLowerCase() === email.toLowerCase().trim()
+      (u) => (u?.email || '').toLowerCase() === normalizedEmail
     );
   }
 

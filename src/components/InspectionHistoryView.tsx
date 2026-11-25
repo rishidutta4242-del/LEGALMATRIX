@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { fetchInspections } from '../services/api';
+import { getRecentCachedInspections, cacheInspectionsBatch } from '../utils/inspectionCache';
 import { InspectionRecord, ProductCategory, ComplianceStatus } from '../types/index';
 import {
   Search,
@@ -23,6 +24,7 @@ export const InspectionHistoryView: React.FC = () => {
 
   const [inspections, setInspections] = useState<InspectionRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [servingFromCache, setServingFromCache] = useState<boolean>(false);
   const [query, setQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
@@ -32,16 +34,44 @@ export const InspectionHistoryView: React.FC = () => {
   }, [statusFilter, categoryFilter]);
 
   const loadData = async () => {
-    try {
+    // Instantly hydrate from IndexedDB so recent scans render even before/without backend response
+    const cachedImmediate = await getRecentCachedInspections({
+      status: statusFilter,
+      category: categoryFilter,
+      query,
+    }).catch(() => []);
+    if (cachedImmediate.length > 0) {
+      setInspections(cachedImmediate);
+      setLoading(false);
+    } else {
       setLoading(true);
-      const data = await fetchInspections({
-        status: statusFilter,
-        category: categoryFilter,
-        query,
-      });
-      setInspections(data);
+    }
+
+    try {
+      const url = new URL(`${window.location.origin}/api/inspections`);
+      if (statusFilter && statusFilter !== 'ALL') url.searchParams.set('status', statusFilter);
+      if (categoryFilter && categoryFilter !== 'ALL') url.searchParams.set('category', categoryFilter);
+      if (query) url.searchParams.set('query', query);
+
+      const res = await fetch(url.toString());
+      if (!res.ok) throw new Error('Backend unavailable');
+      const fresh: InspectionRecord[] = await res.json();
+      setInspections(fresh);
+      setServingFromCache(false);
+      void cacheInspectionsBatch(fresh);
     } catch (err) {
-      console.error(err);
+      if (cachedImmediate.length > 0) {
+        setServingFromCache(true);
+      } else {
+        const fallback = await fetchInspections({
+          status: statusFilter,
+          category: categoryFilter,
+          query,
+        }).catch(() => []);
+        setInspections(fallback);
+        setServingFromCache(fallback.length > 0);
+      }
+      console.warn('Serving inspections from IndexedDB cache:', err);
     } finally {
       setLoading(false);
     }
@@ -177,6 +207,24 @@ export const InspectionHistoryView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {servingFromCache && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs text-amber-900">
+          <div className="flex items-center space-x-2">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+            <span>
+              Backend API unreachable — displaying <strong>{inspections.length}</strong> recent scan(s) cached in browser IndexedDB.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={loadData}
+            className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 text-amber-800 font-semibold hover:bg-amber-100 transition shrink-0 cursor-pointer"
+          >
+            Retry Sync
+          </button>
+        </div>
+      )}
 
       {/* Inspections Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">

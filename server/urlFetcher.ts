@@ -72,7 +72,7 @@ function generateMarketplacePackagingSvg(data: {
     <text x="210" y="590" font-family="Arial, sans-serif" font-size="13" fill="#0f172a">04/2026 | Batch: INSP-MKP-26</text>
 
     <text x="70" y="620" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="#334155">6. Consumer Care:</text>
-    <text x="210" y="620" font-family="Arial, sans-serif" font-size="12" fill="#0369a1">care@${escapeXml(brand.toLowerCase().replace(/[^a-z0-9]/g, ''))}.in | 1800-200-1122</text>
+    <text x="210" y="620" font-family="Arial, sans-serif" font-size="12" fill="#0369a1">care@${escapeXml((brand || 'brand').toLowerCase().replace(/[^a-z0-9]/g, ''))}.in | 1800-200-1122</text>
 
     <rect x="70" y="640" width="180" height="45" fill="#f8fafc" stroke="#cbd5e1"/>
     <text x="160" y="665" font-family="monospace" font-size="14" text-anchor="middle">||| | |||| || |||</text>

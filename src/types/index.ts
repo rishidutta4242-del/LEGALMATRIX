@@ -56,6 +56,11 @@ export interface InspectionImage {
   demo_preset_id?: string;
   sizeBytes?: number;
   sha256?: string;
+  mimeType?: string;
+  pageNumber?: number;
+  ocrText?: string;
+  ocrConfidence?: number;
+  deskewAngleDeg?: number;
   preprocessed_url?: string;
   thresholded_url?: string;
   preprocessing_steps?: string[];
@@ -67,6 +72,81 @@ export interface InspectionImage {
     resolution: string;
     issues: string[];
   };
+}
+
+export interface LocalOcrWord {
+  text: string;
+  confidence: number; // 0.0 - 1.0
+  bbox: ImageBoundingBox; // 0 - 100 percentage
+}
+
+export interface LocalOcrLine {
+  text: string;
+  confidence: number; // 0.0 - 1.0
+  bbox: ImageBoundingBox; // 0 - 100 percentage
+  box_2d: [number, number, number, number]; // 0 - 1000 scale [ymin, xmin, ymax, xmax]
+  words: LocalOcrWord[];
+}
+
+export interface LocalOcrPanelResult {
+  image_id: string;
+  image_type: ImageType;
+  image_sha256?: string;
+  text: string;
+  confidence: number; // 0.0 - 1.0
+  width: number;
+  height: number;
+  rotation_deg?: number;
+  deskew_angle_deg?: number;
+  ocr_pass_mode?: 'AUTO' | 'SPARSE_BINARIZED';
+  language: string;
+  engine: 'tesseract.js';
+  duration_ms: number;
+  lines: LocalOcrLine[];
+  quality?: InspectionImage['quality'];
+  preprocessed_url?: string;
+  thresholded_url?: string;
+  preprocessing_steps?: string[];
+}
+
+export type AiAnalysisStatus = 'COMPLETED' | 'UNAVAILABLE' | 'SKIPPED' | 'CONFIG_ERROR' | 'DEMO_PRESET';
+
+export interface AnalysisExecutionMetadata {
+  scan_id?: string;
+  ocr_completed: boolean;
+  rule_validation_completed: boolean;
+  ai_assisted_completed: boolean;
+  ai_status: AiAnalysisStatus;
+  manual_verification_required: boolean;
+  advisory_message?: string;
+  ocr_engine?: string;
+  ocr_language?: string;
+  ocr_avg_confidence?: number;
+  ai_model_used?: string;
+  source_documents_count?: number;
+  completed_at?: string;
+}
+
+export interface AiModelHealthSnapshot {
+  model: string;
+  available: boolean;
+  cooldownUntil: string | null;
+  cooldownReason?: string;
+  dailyExhaustedUntil: string | null;
+  lastErrorCategory?: string;
+}
+
+export interface AiEngineStatusSnapshot {
+  configured: boolean;
+  aiEnabled: boolean;
+  available: boolean;
+  primaryModel: string;
+  fallbackModel: string;
+  supportedModels: string[];
+  timeoutMs: number;
+  maxRetries: number;
+  advisoryMessage?: string;
+  models: AiModelHealthSnapshot[];
 }
 
 export interface ExtractedDeclaration {
@@ -222,7 +302,9 @@ export interface PipelineStageStatus {
 export interface InspectionRecord {
   id: string;
   demo_preset_id?: string;
-  data_source?: 'LIVE_AI' | 'DEMO_PRESET' | 'MANUAL_ENTRY';
+  data_source?: 'LIVE_AI' | 'DEMO_PRESET' | 'MANUAL_ENTRY' | 'LOCAL_OCR_RULE_ENGINE' | 'HYBRID_OCR_GEMINI';
+  analysis_meta?: AnalysisExecutionMetadata;
+  ocr_panels?: LocalOcrPanelResult[];
   product_name: string;
   brand: string;
   category: ProductCategory;

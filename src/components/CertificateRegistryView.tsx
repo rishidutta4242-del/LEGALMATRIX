@@ -81,14 +81,15 @@ export const CertificateRegistryView: React.FC = () => {
   };
 
   const filtered = certificates.filter((cert) => {
+    if (!cert) return false;
     const matchesStatus = statusFilter === 'ALL' || cert.status === statusFilter;
-    const q = search.toLowerCase().trim();
+    const q = (search || '').toLowerCase().trim();
     const matchesQuery =
       !q ||
-      cert.certificate_id.toLowerCase().includes(q) ||
-      cert.product_name.toLowerCase().includes(q) ||
-      cert.brand.toLowerCase().includes(q) ||
-      cert.inspection_id.toLowerCase().includes(q) ||
+      (cert.certificate_id || '').toLowerCase().includes(q) ||
+      (cert.product_name || '').toLowerCase().includes(q) ||
+      (cert.brand || '').toLowerCase().includes(q) ||
+      (cert.inspection_id || '').toLowerCase().includes(q) ||
       (cert.gtin_barcode && cert.gtin_barcode.includes(q));
     return matchesStatus && matchesQuery;
   });
